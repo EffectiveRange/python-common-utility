@@ -1,0 +1,27 @@
+{
+  "attribute1": {
+    "attribute1": 1,
+    "attribute2": "1",
+    "attribute3": 1,
+    "attribute4": [
+      "1",
+      "1"
+    ]
+  },
+  "attribute2": [
+    {
+      "attribute1": 2,
+      "attribute2": "2",
+      "attribute4": [
+        "2",
+        "2"
+      ]
+    },
+    {
+      "attribute1": 3,
+      "attribute2": "3",
+      "attribute3": 3,
+      "attribute4": []
+    }
+  ]
+}
