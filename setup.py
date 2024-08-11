@@ -7,7 +7,7 @@ setup(
     author='Ferenc Nandor Janky & Attila Gombos',
     author_email='info@effective-range.com',
     packages=['common_utility', 'test_utility'],
-    package_data={'common_utility': ['py.typed']},
+    package_data={'common_utility': ['py.typed'], 'test_utility': ['py.typed']},
     install_requires=[
         'requests',
         'pydantic',
