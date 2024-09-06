@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 from os.path import exists
+from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -64,7 +65,7 @@ def is_file_contains_lines(file: str, expected_lines: list[str]) -> bool:
     return file_lines_set == expected_lines_set
 
 
-def render_template_file(resource_root: str, template_file: str, context: dict[str, str]) -> str:
+def render_template_file(resource_root: str, template_file: str, context: dict[str, Any]) -> str:
     template_path = f'{resource_root}/{template_file}'
     environment = Environment(loader=FileSystemLoader(os.path.dirname(template_path)))
     template = environment.get_template(os.path.basename(template_path))
