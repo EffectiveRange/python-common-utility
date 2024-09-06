@@ -7,8 +7,9 @@
 | common\_utility/\_\_init\_\_.py    |        5 |        0 |        0 |        0 |    100% |           |
 | common\_utility/fileDownloader.py  |       50 |        0 |       18 |        3 |     96% |75->78, 94->exit, 95->94 |
 | common\_utility/jsonLoader.py      |       30 |        1 |       10 |        2 |     92% |40->exit, 50 |
+| common\_utility/reusableTimer.py   |       37 |        0 |       14 |        6 |     88% |47->54, 57->exit, 58->57, 71->exit, 72->71, 84->exit |
 | common\_utility/sessionProvider.py |        6 |        1 |        0 |        0 |     83% |        17 |
-|                          **TOTAL** |   **91** |    **2** |   **28** |    **5** | **94%** |           |
+|                          **TOTAL** |  **128** |    **2** |   **42** |   **11** | **92%** |           |
 
 
 ## Setup coverage badge
