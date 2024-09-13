@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='python-common-utility',
-    version='1.0.2',
+    version='1.0.3',
     description='Common utility packages for Python projects',
     author='Ferenc Nandor Janky & Attila Gombos',
     author_email='info@effective-range.com',
