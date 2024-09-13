@@ -5,7 +5,7 @@ from unittest import TestCase
 from context_logger import setup_logging
 from pydantic import ValidationError, BaseModel
 
-from common_utility import JsonLoader
+from common_utility.jsonLoader import JsonLoader
 from tests import TEST_RESOURCE_ROOT
 
 
