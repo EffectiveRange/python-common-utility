@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from context_logger import get_logger
 from requests import Response
 
-from common_utility import ISessionProvider
+from common_utility import ISessionProvider, create_directory
 
 log = get_logger('FileDownloader')
 
@@ -20,6 +20,7 @@ class IFileDownloader(object):
         self,
         file_url: str,
         file_name: Optional[str] = None,
+        sub_dir: Optional[str] = None,
         headers: Optional[dict[str, str]] = None,
         skip_if_exists: bool = True,
         chunk_size: int = 1000 * 1000,
@@ -37,6 +38,7 @@ class FileDownloader(IFileDownloader):
         self,
         file_url: str,
         file_name: Optional[str] = None,
+        sub_dir: Optional[str] = None,
         headers: Optional[dict[str, str]] = None,
         skip_if_exists: bool = True,
         chunk_size: int = 1000 * 1000,
@@ -44,7 +46,7 @@ class FileDownloader(IFileDownloader):
         if not urlparse(file_url).scheme:
             return self._check_local_file(file_url)
 
-        file_path = self._get_download_path(file_url, file_name)
+        file_path = self._get_download_path(file_url, file_name, sub_dir)
 
         if skip_if_exists and os.path.isfile(file_path):
             log.info('File already exists, skipping download', file=file_path)
@@ -81,11 +83,17 @@ class FileDownloader(IFileDownloader):
 
         return response
 
-    def _get_download_path(self, file_url: str, file_name: Optional[str]) -> str:
+    def _get_download_path(self, file_url: str, file_name: Optional[str], sub_dir: Optional[str] = None) -> str:
         if not file_name and '/' in file_url:
             file_name = file_url.split('/')[-1]
 
-        return f'{self._download_location}/{file_name}'
+        download_dir = self._download_location
+
+        if sub_dir:
+            download_dir += f'/{sub_dir}'
+            create_directory(download_dir)
+
+        return f'{download_dir}/{file_name}'
 
     def _download_file(self, response: Response, file_path: str, chunk_size: int) -> None:
         if not os.path.exists(self._download_location):
