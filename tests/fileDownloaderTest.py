@@ -50,6 +50,21 @@ class FileDownloaderTest(TestCase):
         with open(f'{self.DOWNLOAD_LOCATION}/test_package1.deb', 'rb') as file:
             self.assertEqual(b'content', file.read())
 
+    def test_download_returns_downloaded_file_path_when_sub_dir_specified(self):
+        # Given
+        create_directory(self.DOWNLOAD_LOCATION)
+        session, session_provider = create_components()
+        file_downloader = FileDownloader(session_provider, self.DOWNLOAD_LOCATION)
+
+        # When
+        result = file_downloader.download('http://url1/package1.deb', sub_dir='distro')
+
+        # Then
+        session.get.assert_called_once_with('http://url1/package1.deb', stream=True, headers={})
+        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/distro/package1.deb', result)
+        with open(f'{self.DOWNLOAD_LOCATION}/distro/package1.deb', 'rb') as file:
+            self.assertEqual(b'content', file.read())
+
     def test_download_returns_downloaded_file_path_when_headers_specified(self):
         # Given
         file_content = b'content'
