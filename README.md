@@ -6,11 +6,11 @@
 |----------------------------------- | -------: | -------: | -------: | -------: | ------: | --------: |
 | common\_utility/\_\_init\_\_.py    |        5 |        0 |        0 |        0 |    100% |           |
 | common\_utility/configLoader.py    |       28 |        0 |        4 |        0 |    100% |           |
-| common\_utility/fileDownloader.py  |       54 |        0 |       16 |        0 |    100% |           |
+| common\_utility/fileDownloader.py  |       67 |        0 |       22 |        0 |    100% |           |
 | common\_utility/jsonLoader.py      |       30 |        1 |        4 |        1 |     94% |        50 |
 | common\_utility/reusableTimer.py   |       37 |        0 |        6 |        2 |     95% |58->exit, 72->exit |
 | common\_utility/sessionProvider.py |        6 |        1 |        0 |        0 |     83% |        17 |
-|                          **TOTAL** |  **160** |    **2** |   **30** |    **3** | **97%** |           |
+|                          **TOTAL** |  **173** |    **2** |   **36** |    **3** | **98%** |           |
 
 
 ## Setup coverage badge
