@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from context_logger import get_logger
 from requests import Response
 
-from common_utility import ISessionProvider, create_directory
+from common_utility import ISessionProvider, create_directory, copy_file
 
 log = get_logger('FileDownloader')
 
@@ -17,14 +17,25 @@ log = get_logger('FileDownloader')
 class IFileDownloader(object):
 
     def download(
-        self,
-        file_url: str,
-        file_name: Optional[str] = None,
-        sub_dir: Optional[str] = None,
-        headers: Optional[dict[str, str]] = None,
-        skip_if_exists: bool = True,
-        chunk_size: int = 1000 * 1000,
+            self,
+            file_url: str,
+            file_name: Optional[str] = None,
+            sub_dir: Optional[str] = None,
+            headers: Optional[dict[str, str]] = None,
+            skip_if_exists: bool = True,
+            chunk_size: int = 1000 * 1000,
     ) -> str:
+        raise NotImplementedError()
+
+    def download_and_copy(
+            self,
+            file_url: str,
+            sub_dirs: list[str],
+            file_name: Optional[str] = None,
+            headers: Optional[dict[str, str]] = None,
+            skip_if_exists: bool = True,
+            chunk_size: int = 1000 * 1000,
+    ) -> list[str]:
         raise NotImplementedError()
 
 
@@ -35,18 +46,18 @@ class FileDownloader(IFileDownloader):
         self._download_location = download_location
 
     def download(
-        self,
-        file_url: str,
-        file_name: Optional[str] = None,
-        sub_dir: Optional[str] = None,
-        headers: Optional[dict[str, str]] = None,
-        skip_if_exists: bool = True,
-        chunk_size: int = 1000 * 1000,
+            self,
+            file_url: str,
+            file_name: Optional[str] = None,
+            sub_dir: Optional[str] = None,
+            headers: Optional[dict[str, str]] = None,
+            skip_if_exists: bool = True,
+            chunk_size: int = 1000 * 1000,
     ) -> str:
         if not urlparse(file_url).scheme:
             return self._check_local_file(file_url)
 
-        file_path = self._get_download_path(file_url, file_name, sub_dir)
+        file_path = self._get_target_path(file_url, file_name, sub_dir)
 
         if skip_if_exists and os.path.isfile(file_path):
             log.info('File already exists, skipping download', file=file_path)
@@ -63,6 +74,33 @@ class FileDownloader(IFileDownloader):
         log.info('Downloaded file', file=file_path)
 
         return file_path
+
+    def download_and_copy(
+            self,
+            file_url: str,
+            sub_dirs: list[str],
+            file_name: Optional[str] = None,
+            headers: Optional[dict[str, str]] = None,
+            skip_if_exists: bool = True,
+            chunk_size: int = 1000 * 1000,
+    ) -> list[str]:
+        if not sub_dirs:
+            raise ValueError('At least one sub directory must be provided')
+
+        downloaded_files = [self.download(file_url, file_name, sub_dirs[0], headers, skip_if_exists, chunk_size)]
+
+        for sub_dir in sub_dirs[1:]:
+            file_path = self._get_target_path(file_url, file_name, sub_dir)
+
+            if skip_if_exists and os.path.isfile(file_path):
+                log.info('File already exists, skipping copy', file=file_path)
+            else:
+                copy_file(downloaded_files[0], file_path)
+                log.info('Copied downloaded file', file=file_path)
+
+            downloaded_files.append(file_path)
+
+        return downloaded_files
 
     def _check_local_file(self, file_url: str) -> str:
         file_path = os.path.abspath(file_url)
@@ -83,7 +121,7 @@ class FileDownloader(IFileDownloader):
 
         return response
 
-    def _get_download_path(self, file_url: str, file_name: Optional[str], sub_dir: Optional[str] = None) -> str:
+    def _get_target_path(self, file_url: str, file_name: Optional[str], sub_dir: Optional[str] = None) -> str:
         if not file_name and '/' in file_url:
             file_name = file_url.split('/')[-1]
 
