@@ -1,24 +1,38 @@
 import time
 from difflib import Differ
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 
 
-def compare_files(file1: str, file2: str) -> bool:
+def compare_files(file1: str, file2: str, exclude_lines: Optional[list[str]] = None) -> bool:
     with open(file1, 'r') as f1, open(file2, 'r') as f2:
         lines1 = f1.readlines()
         lines2 = f2.readlines()
 
-    return compare_lines(lines1, lines2)
+    return compare_lines(lines1, lines2, exclude_lines)
 
 
-def compare_lines(lines1: list[str], lines2: list[str]) -> bool:
+def compare_file_with_lines(file: str, lines: list[str], exclude_lines: Optional[list[str]] = None) -> bool:
+    with open(file, 'r') as f1:
+        file_lines = f1.readlines()
+
+    return compare_lines(file_lines, lines, exclude_lines)
+
+
+def compare_lines(lines1: list[str], lines2: list[str], exclude_lines: Optional[list[str]] = None) -> bool:
+    if exclude_lines is None:
+        exclude_lines = []
+
     all_lines_match = True
 
     for line in Differ().compare(lines1, lines2):
-        if not line.startswith('?'):
-            print(line.strip('\n'))
-        if line.startswith(('-', '+', '?')):
-            all_lines_match = False
+        line = line.strip()
+        if not any(keyword in line for keyword in exclude_lines):
+            if not line.startswith('?'):
+                print(line)
+            if line.startswith(('-', '+')):
+                all_lines_match = False
+        elif line.startswith('+'):
+            print(line.replace('+ ', ''))
 
     return all_lines_match
 
