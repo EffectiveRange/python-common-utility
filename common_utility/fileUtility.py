@@ -70,3 +70,16 @@ def render_template_file(resource_root: str, template_file: str, context: dict[s
     environment = Environment(loader=FileSystemLoader(os.path.dirname(template_path)))
     template = environment.get_template(os.path.basename(template_path))
     return f'{template.render(context)}\n'
+
+
+def replace_in_file(file_path: str, pattern: str, replacement: str) -> None:
+    if not exists(file_path):
+        return
+
+    with open(file_path, 'r') as file:
+        original_content = file.read()
+
+    replaced_content = re.sub(pattern, replacement, original_content, flags=re.MULTILINE)
+
+    with open(file_path, 'w') as file:
+        file.write(replaced_content)
