@@ -14,6 +14,4 @@ on:
 
 jobs:
   call_ci:
-    uses: EffectiveRange/ci-workflows/.github/workflows/python-ci.yaml@v3
-    with:
-      coverage-threshold: 95
+    uses: EffectiveRange/ci-workflows/.github/workflows/python-ci.yaml@v4
