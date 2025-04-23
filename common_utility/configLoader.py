@@ -36,7 +36,7 @@ class ConfigLoader(IConfigLoader):
         else:
             log.info('Using configuration file', config_file=str(config_file))
 
-        parser = ConfigParser()
+        parser = ConfigParser(interpolation=None)
         parser.read(config_file)
 
         configuration = {}
