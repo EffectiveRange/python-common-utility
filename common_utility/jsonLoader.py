@@ -4,6 +4,7 @@
 
 import json
 import os
+from pathlib import Path
 from typing import TypeVar, Type, Union, List, Callable, Any
 
 from context_logger import get_logger
@@ -16,27 +17,27 @@ T = TypeVar('T', bound=BaseModel)
 
 class IJsonLoader(object):
 
-    def load(self, json_file_path: str, model: Type[T]) -> T:
+    def load(self, json_file_path: Union[str, Path], model: Type[T]) -> T:
         raise NotImplementedError()
 
-    def load_list(self, json_file_path: str, model: Type[T]) -> List[T]:
+    def load_list(self, json_file_path: Union[str, Path], model: Type[T]) -> List[T]:
         raise NotImplementedError()
 
 
 class JsonLoader(IJsonLoader):
 
-    def load(self, json_data: str, model: Type[T]) -> T:
-        data = self._load_data(json_data)
+    def load(self, json_file_path: Union[str, Path], model: Type[T]) -> T:
+        data = self._load_data(json_file_path)
 
         return self._validate(data, dict, lambda: model(**data))  # type: ignore
 
-    def load_list(self, json_data: str, model: Type[T]) -> List[T]:
-        data = self._load_data(json_data)
+    def load_list(self, json_file_path: Union[str, Path], model: Type[T]) -> List[T]:
+        data = self._load_data(json_file_path)
 
         return self._validate(data, list, lambda: [model(**item) for item in data])  # type: ignore
 
-    def _load_data(self, json_data: str) -> Any:
-        if os.path.isfile(json_data):
+    def _load_data(self, json_data: Union[str, Path]) -> Any:
+        if os.path.isfile(json_data) or isinstance(json_data, Path):
             with open(json_data, 'r') as json_file:
                 return json.load(json_file)
         else:

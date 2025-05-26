@@ -72,6 +72,34 @@ class RateLimiterTest(TestCase):
         # Then
         self.assertFalse(result)
 
+    @patch('time.monotonic', side_effect=[0.0, 100.0, 600.0, 1200.0])
+    def test_acquire_when_not_exceeds_limit_and_hour_based(self, mock_monotonic):
+        # Given
+        rate_limiter = TokenBucketLimiter(10, 3600, 2)
+
+        rate_limiter.acquire(10)
+        rate_limiter.acquire(10)
+
+        # When
+        result = rate_limiter.acquire(3)
+
+        # Then
+        self.assertTrue(result)
+
+    @patch('time.monotonic', side_effect=[0.0, 100.0, 600.0, 1200.0])
+    def test_acquire_when_exceeds_limit_and_hour_based(self, mock_monotonic):
+        # Given
+        rate_limiter = TokenBucketLimiter(10, 3600, 2)
+
+        rate_limiter.acquire(10)
+        rate_limiter.acquire(10)
+
+        # When
+        result = rate_limiter.acquire(10)
+
+        # Then
+        self.assertFalse(result)
+
 
 if __name__ == '__main__':
     unittest.main()
