@@ -1,23 +1,20 @@
 {
-  "editor.rulers": [
-    120
-  ],
-  "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter",
-    "editor.formatOnSave": true
-  },
-  "black-formatter.args": [
-    "--skip-string-normalization",
-    "--line-length",
-    "120"
-  ],
-  "python.testing.unittestArgs": [
-    "-v",
-    "-s",
-    "./tests",
-    "-p",
-    "*test.py"
-  ],
-  "python.testing.pytestEnabled": false,
-  "python.testing.unittestEnabled": true
+    "python.venvPath": "${workspaceFolder}/.venv",
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s",
+        "./tests",
+        "-p",
+        "*test.py"
+    ],
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "black-formatter.interpreter": [
+        "${workspaceFolder}/.venv/bin/python3"
+    ],
+    "black-formatter.args": [
+        "--config=setup.cfg"
+    ],
+    "python.analysis.typeCheckingMode": "standard",
+    "python.testing.pytestArgs": []
 }

@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock
 
@@ -11,7 +12,7 @@ from tests import TEST_FILE_SYSTEM_ROOT
 
 
 class FileDownloaderTest(TestCase):
-    DOWNLOAD_LOCATION = f'{TEST_FILE_SYSTEM_ROOT}/opt/debs'
+    DOWNLOAD_LOCATION = Path(f'{TEST_FILE_SYSTEM_ROOT}/opt/debs')
 
     @classmethod
     def setUpClass(cls):
@@ -31,8 +32,8 @@ class FileDownloaderTest(TestCase):
 
         # Then
         session.get.assert_called_once_with('http://url1/package1.deb', stream=True, headers={})
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/package1.deb', result)
-        with open(f'{self.DOWNLOAD_LOCATION}/package1.deb', 'rb') as file:
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/package1.deb'), result)
+        with open(result, 'rb') as file:
             self.assertEqual(b'content', file.read())
 
     def test_download_returns_downloaded_file_path_when_file_name_specified(self):
@@ -46,8 +47,8 @@ class FileDownloaderTest(TestCase):
 
         # Then
         session.get.assert_called_once_with('http://url1/package1.deb', stream=True, headers={})
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/test_package1.deb', result)
-        with open(f'{self.DOWNLOAD_LOCATION}/test_package1.deb', 'rb') as file:
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/test_package1.deb'), result)
+        with open(result, 'rb') as file:
             self.assertEqual(b'content', file.read())
 
     def test_download_returns_downloaded_file_path_when_sub_dir_specified(self):
@@ -57,12 +58,12 @@ class FileDownloaderTest(TestCase):
         file_downloader = FileDownloader(session_provider, self.DOWNLOAD_LOCATION)
 
         # When
-        result = file_downloader.download('http://url1/package1.deb', sub_dir='distro')
+        result = file_downloader.download('http://url1/package1.deb', sub_dir=Path('distro'))
 
         # Then
         session.get.assert_called_once_with('http://url1/package1.deb', stream=True, headers={})
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/distro/package1.deb', result)
-        with open(f'{self.DOWNLOAD_LOCATION}/distro/package1.deb', 'rb') as file:
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/distro/package1.deb'), result)
+        with open(result, 'rb') as file:
             self.assertEqual(b'content', file.read())
 
     def test_download_returns_downloaded_file_path_when_headers_specified(self):
@@ -83,8 +84,8 @@ class FileDownloaderTest(TestCase):
             stream=True,
             headers={'header1': 'value1', 'header2': 'value2'},
         )
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/package1.deb', result)
-        with open(f'{self.DOWNLOAD_LOCATION}/package1.deb', 'rb') as file:
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/package1.deb'), result)
+        with open(result, 'rb') as file:
             self.assertEqual(file_content, file.read())
 
     def test_download_raises_error_when_fails_to_download_file(self):
@@ -110,7 +111,7 @@ class FileDownloaderTest(TestCase):
 
         # Then
         session.get.assert_not_called()
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/package1.deb', result)
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/package1.deb'), result)
 
     def test_download_returns_downloaded_file_path_when_file_is_present_and_overwrites(self):
         # Given
@@ -124,7 +125,7 @@ class FileDownloaderTest(TestCase):
 
         # Then
         session.get.assert_called_once_with('http://url1/package1.deb', stream=True, headers={})
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/package1.deb', result)
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/package1.deb'), result)
 
     def test_download_returns_local_file_path_when_local_file_is_present(self):
         # Given
@@ -137,7 +138,7 @@ class FileDownloaderTest(TestCase):
         result = file_downloader.download(file_path)
 
         # Then
-        self.assertEqual(file_path, result)
+        self.assertEqual(Path(file_path), result)
 
     def test_download_raises_error_when_local_file_is_not_present(self):
         # Given
@@ -158,16 +159,17 @@ class FileDownloaderTest(TestCase):
         file_downloader = FileDownloader(session_provider, self.DOWNLOAD_LOCATION)
 
         # When
-        result = file_downloader.download_and_copy('http://url1/package1.deb', sub_dirs=['distro1', 'distro2'])
+        result = file_downloader.download_and_copy('http://url1/package1.deb',
+                                                   sub_dirs=[Path('distro1'), Path('distro2')])
 
         # Then
         session.get.assert_called_once_with('http://url1/package1.deb', stream=True, headers={})
         self.assertEqual(2, len(result))
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/distro1/package1.deb', result[0])
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/distro2/package1.deb', result[1])
-        with open(f'{self.DOWNLOAD_LOCATION}/distro1/package1.deb', 'rb') as file:
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/distro1/package1.deb'), result[0])
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/distro2/package1.deb'), result[1])
+        with open(result[0], 'rb') as file:
             self.assertEqual(b'content', file.read())
-        with open(f'{self.DOWNLOAD_LOCATION}/distro2/package1.deb', 'rb') as file:
+        with open(result[1], 'rb') as file:
             self.assertEqual(b'content', file.read())
 
     def test_download_and_copy_returns_downloaded_and_copied_file_paths_when_file_is_present(self):
@@ -176,19 +178,20 @@ class FileDownloaderTest(TestCase):
         session, session_provider = create_components()
         file_downloader = FileDownloader(session_provider, self.DOWNLOAD_LOCATION)
 
-        file_downloader.download('http://url1/package1.deb', sub_dir='distro2')
+        file_downloader.download('http://url1/package1.deb', sub_dir=Path('distro2'))
 
         # When
-        result = file_downloader.download_and_copy('http://url1/package1.deb', sub_dirs=['distro1', 'distro2'])
+        result = file_downloader.download_and_copy('http://url1/package1.deb',
+                                                   sub_dirs=[Path('distro1'), Path('distro2')])
 
         # Then
         session.get.assert_called_with('http://url1/package1.deb', stream=True, headers={})
         self.assertEqual(2, len(result))
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/distro1/package1.deb', result[0])
-        self.assertEqual(f'{self.DOWNLOAD_LOCATION}/distro2/package1.deb', result[1])
-        with open(f'{self.DOWNLOAD_LOCATION}/distro1/package1.deb', 'rb') as file:
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/distro1/package1.deb'), result[0])
+        self.assertEqual(Path(f'{self.DOWNLOAD_LOCATION}/distro2/package1.deb'), result[1])
+        with open(result[0], 'rb') as file:
             self.assertEqual(b'content', file.read())
-        with open(f'{self.DOWNLOAD_LOCATION}/distro2/package1.deb', 'rb') as file:
+        with open(result[1], 'rb') as file:
             self.assertEqual(b'content', file.read())
 
     def test_download_and_copy_raises_error_when_sub_directories_is_empty(self):

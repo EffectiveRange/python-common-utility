@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: MIT
 
 import os
-import shutil
 from configparser import ConfigParser
 from pathlib import Path
 from typing import Any
 
 from context_logger import get_logger
+
+from common_utility import copy_file
 
 log = get_logger('ConfigLoader')
 
@@ -21,29 +22,37 @@ class IConfigLoader(object):
 
 class ConfigLoader(IConfigLoader):
 
-    def __init__(self, resource_root: str, default_config: str, config_file_argument: str = 'config_file') -> None:
-        self._resource_root = resource_root
-        self._default_config = f'{self._resource_root}/{default_config}'
+    def __init__(self, default_config_file: Path, config_file_argument: str = 'config_file') -> None:
+        self._default_config_file = default_config_file
         self._config_file_argument = config_file_argument
 
     def load(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        config_file = Path(arguments[self._config_file_argument])
-
-        if not os.path.exists(config_file):
-            log.info('Loading default configuration file', config_file=self._default_config)
-            config_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(self._default_config, config_file)
-        else:
-            log.info('Using configuration file', config_file=str(config_file))
-
         parser = ConfigParser(interpolation=None)
-        parser.read(config_file)
+
+        log.info('Loading default configuration', config_file=str(self._default_config_file))
+        parser.read(self._default_config_file)
+
+        if config_file := arguments.get(self._config_file_argument):
+            custom_config_file = Path(config_file)
+
+            if os.path.exists(custom_config_file):
+                log.info('Loading custom configuration', config_file=str(custom_config_file))
+                parser.read(custom_config_file)
+            else:
+                try:
+                    log.info('Creating custom configuration using default', config_file=str(custom_config_file))
+                    copy_file(self._default_config_file, custom_config_file)
+                except Exception as exception:
+                    log.warn('Failed to create custom configuration file', error=str(exception))
 
         configuration = {}
 
         for section in parser.sections():
             configuration.update(dict(parser[section]))
 
+        log.info('Loading command line arguments', arguments=arguments)
         configuration.update(arguments)
+
+        log.info('Configuration loaded', configuration=configuration)
 
         return configuration

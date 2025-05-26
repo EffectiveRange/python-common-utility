@@ -1,13 +1,14 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name='python-common-utility',
-    version='1.3.0',
     description='Common utility packages for Python projects',
     author='Ferenc Nandor Janky & Attila Gombos',
     author_email='info@effective-range.com',
-    packages=['common_utility', 'test_utility'],
+    packages=find_packages(exclude=['tests']),
     package_data={'common_utility': ['py.typed'], 'test_utility': ['py.typed']},
+    use_scm_version=True,
+    setup_requires=["setuptools_scm"],
     install_requires=[
         'requests',
         'pydantic',

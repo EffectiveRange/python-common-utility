@@ -1,9 +1,10 @@
 import time
 from difflib import Differ
-from typing import Callable, Any, Optional
+from pathlib import Path
+from typing import Callable, Any, Optional, Union
 
 
-def compare_files(file1: str, file2: str, exclude_lines: Optional[list[str]] = None) -> bool:
+def compare_files(file1: Union[str, Path], file2: Union[str, Path], exclude_lines: Optional[list[str]] = None) -> bool:
     with open(file1, 'r') as f1, open(file2, 'r') as f2:
         lines1 = f1.readlines()
         lines2 = f2.readlines()
@@ -11,7 +12,8 @@ def compare_files(file1: str, file2: str, exclude_lines: Optional[list[str]] = N
     return compare_lines(lines1, lines2, exclude_lines)
 
 
-def compare_file_with_lines(file: str, lines: list[str], exclude_lines: Optional[list[str]] = None) -> bool:
+def compare_file_with_lines(
+        file: Union[str, Path], lines: list[str], exclude_lines: Optional[list[str]] = None) -> bool:
     with open(file, 'r') as f1:
         file_lines = f1.readlines()
 

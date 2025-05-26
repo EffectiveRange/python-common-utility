@@ -230,7 +230,7 @@ It contains multiple lines.""")
         create_file(file_path, 'Hello, {{ name }}!')
 
         # When
-        result = render_template_file('', file_path, {'name': 'World'})
+        result = render_template_file(file_path, {'name': 'World'})
 
         # Then
         self.assertEqual(result, 'Hello, World!\n')
