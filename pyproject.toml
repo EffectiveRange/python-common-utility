@@ -1,0 +1,37 @@
+[project]
+name = "python-common-utility"
+description = "Common utility packages for Python projects"
+authors = [
+    { name = "Ferenc Nandor Janky & Attila Gombos", email = "info@effective-range.com" }
+]
+maintainers = [
+    { name = "Ferenc Nandor Janky & Attila Gombos", email = "info@effective-range.com" }
+]
+dependencies = [
+    "requests",
+    "pydantic",
+    "jinja2",
+    "netifaces",
+    "python-context-logger @ git+https://github.com/EffectiveRange/python-context-logger.git@latest",
+]
+dynamic = ["version"]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+packages = ["common_utility", "test_utility"]
+
+[tool.setuptools.package-data]
+hello = ["py.typed"]
+
+[build-system]
+requires = ["setuptools>=61", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+
+[tool.pytest]
+addopts = ["--verbose", "--capture=no"]
+python_files = ["*Test.py"]
+python_classes = ["*Test"]
