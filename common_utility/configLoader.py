@@ -6,7 +6,7 @@ import sys
 from argparse import ArgumentParser, Action, Namespace
 from configparser import ConfigParser
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, TextIO
 
 from context_logger import get_logger
 
@@ -14,6 +14,9 @@ from context_logger import get_logger
 class IConfigLoader(object):
 
     def load(self, argument_parser: ArgumentParser) -> Namespace:
+        raise NotImplementedError()
+
+    def dump(self, argument_parser: ArgumentParser, config: Namespace, file: TextIO = sys.stdout) -> None:
         raise NotImplementedError()
 
 
@@ -56,6 +59,24 @@ class ConfigLoader(IConfigLoader):
         self.log.info('Configuration loaded', configuration=configuration)
 
         return Namespace(**configuration)
+
+    def dump(self, argument_parser: ArgumentParser, config: Namespace, file: TextIO = sys.stdout) -> None:
+        for group in argument_parser._action_groups:
+            section = group.title if group.title else 'DEFAULT'
+            values = {}
+
+            for action in group._group_actions:
+                if not action.dest or action.dest == "help":
+                    continue
+                value = getattr(config, action.dest, None)
+                if value is None:
+                    continue
+                values[action.dest] = str(value)
+
+            if values:
+                self._config_parser[section] = values
+
+        self._config_parser.write(file)
 
     def _get_cli_overrides(self, parser: ArgumentParser, arguments: Namespace) -> dict[str, Any]:
         cli_overrides: dict[str, Any] = {}
