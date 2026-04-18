@@ -1,12 +1,11 @@
 import sys
 import unittest
-from argparse import ArgumentParser
+from argparse import ArgumentParser, _ArgumentGroup
 from configparser import ConfigParser
 from io import StringIO
 from pathlib import Path
-from typing import cast
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from context_logger import setup_logging
 
@@ -276,13 +275,11 @@ class ConfigLoaderTest(TestCase):
         config_loader = ConfigLoader(Path(DEFAULT_CONFIG_FILE))
         argument_parser = ArgumentParser(add_help=False)
         region_action = argument_parser.add_argument('--region')
+        dummy_group = MagicMock(spec=_ArgumentGroup)
+        dummy_group.title = None
+        dummy_group._group_actions = [region_action]
 
-        class DummyGroup(object):
-            def __init__(self):
-                self.title = None
-                self._group_actions = [region_action]
-
-        argument_parser._action_groups = cast(list, [DummyGroup()])
+        argument_parser._action_groups = [dummy_group]
         output = StringIO()
 
         # When
