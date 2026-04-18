@@ -1,6 +1,8 @@
 import sys
 import unittest
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
+from configparser import ConfigParser
+from io import StringIO
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -210,6 +212,86 @@ class ConfigLoaderTest(TestCase):
         # Then
         self.assertEqual('invalid', result.retry_count)
         self.assertEqual('invalid', result.timeout)
+
+    def test_dump_when_values_present_then_write_config_sections(self):
+        # Given
+        config_loader = ConfigLoader(Path(DEFAULT_CONFIG_FILE))
+        argument_parser = ArgumentParser()
+        network_group = argument_parser.add_argument_group('network')
+        network_group.add_argument('--host')
+        network_group.add_argument('--port')
+        runtime_group = argument_parser.add_argument_group('runtime')
+        runtime_group.add_argument('--debug')
+        config = Namespace(host='localhost', port=8080, debug=True)
+        output = StringIO()
+
+        # When
+        config_loader.dump(argument_parser, config, output)
+
+        # Then
+        parser = ConfigParser(interpolation=None)
+        parser.read_string(output.getvalue())
+        self.assertEqual('localhost', parser['network']['host'])
+        self.assertEqual('8080', parser['network']['port'])
+        self.assertEqual('True', parser['runtime']['debug'])
+
+    def test_dump_when_value_is_none_then_skip_value(self):
+        # Given
+        config_loader = ConfigLoader(Path(DEFAULT_CONFIG_FILE))
+        argument_parser = ArgumentParser()
+        runtime_group = argument_parser.add_argument_group('runtime')
+        runtime_group.add_argument('--timeout')
+        runtime_group.add_argument('--retries')
+        config = Namespace(timeout=None, retries=3)
+        output = StringIO()
+
+        # When
+        config_loader.dump(argument_parser, config, output)
+
+        # Then
+        parser = ConfigParser(interpolation=None)
+        parser.read_string(output.getvalue())
+        self.assertEqual('3', parser['runtime']['retries'])
+        self.assertNotIn('timeout', parser['runtime'])
+        self.assertNotIn('help', output.getvalue())
+
+    def test_dump_when_all_values_in_group_are_none_then_omit_section(self):
+        # Given
+        config_loader = ConfigLoader(Path(DEFAULT_CONFIG_FILE))
+        argument_parser = ArgumentParser()
+        secret_group = argument_parser.add_argument_group('secret')
+        secret_group.add_argument('--token')
+        config = Namespace(token=None)
+        output = StringIO()
+
+        # When
+        config_loader.dump(argument_parser, config, output)
+
+        # Then
+        self.assertNotIn('[secret]', output.getvalue())
+
+    def test_dump_when_group_has_no_title_then_uses_default_section(self):
+        # Given
+        config_loader = ConfigLoader(Path(DEFAULT_CONFIG_FILE))
+        argument_parser = ArgumentParser(add_help=False)
+        region_action = argument_parser.add_argument('--region')
+
+        class DummyGroup(object):
+            def __init__(self):
+                self.title = None
+                self._group_actions = [region_action]
+
+        argument_parser._action_groups = [DummyGroup()]
+        config = Namespace(region='eu-central')
+        output = StringIO()
+
+        # When
+        config_loader.dump(argument_parser, config, output)
+
+        # Then
+        parser = ConfigParser(interpolation=None)
+        parser.read_string(output.getvalue())
+        self.assertEqual('eu-central', parser.defaults()['region'])
 
 
 if __name__ == '__main__':
