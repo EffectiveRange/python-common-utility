@@ -1,9 +1,10 @@
 import sys
 import unittest
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser
 from configparser import ConfigParser
 from io import StringIO
 from pathlib import Path
+from typing import cast
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -222,11 +223,11 @@ class ConfigLoaderTest(TestCase):
         network_group.add_argument('--port')
         runtime_group = argument_parser.add_argument_group('runtime')
         runtime_group.add_argument('--debug')
-        config = Namespace(host='localhost', port=8080, debug=True)
         output = StringIO()
 
         # When
-        config_loader.dump(argument_parser, config, output)
+        with patch.object(sys, 'argv', ['test', '--host', 'localhost', '--port', '8080', '--debug', 'True']):
+            config_loader.dump(argument_parser, output)
 
         # Then
         parser = ConfigParser(interpolation=None)
@@ -242,11 +243,11 @@ class ConfigLoaderTest(TestCase):
         runtime_group = argument_parser.add_argument_group('runtime')
         runtime_group.add_argument('--timeout')
         runtime_group.add_argument('--retries')
-        config = Namespace(timeout=None, retries=3)
         output = StringIO()
 
         # When
-        config_loader.dump(argument_parser, config, output)
+        with patch.object(sys, 'argv', ['test', '--retries', '3']):
+            config_loader.dump(argument_parser, output)
 
         # Then
         parser = ConfigParser(interpolation=None)
@@ -261,11 +262,11 @@ class ConfigLoaderTest(TestCase):
         argument_parser = ArgumentParser()
         secret_group = argument_parser.add_argument_group('secret')
         secret_group.add_argument('--token')
-        config = Namespace(token=None)
         output = StringIO()
 
         # When
-        config_loader.dump(argument_parser, config, output)
+        with patch.object(sys, 'argv', ['test']):
+            config_loader.dump(argument_parser, output)
 
         # Then
         self.assertNotIn('[secret]', output.getvalue())
@@ -281,12 +282,12 @@ class ConfigLoaderTest(TestCase):
                 self.title = None
                 self._group_actions = [region_action]
 
-        argument_parser._action_groups = [DummyGroup()]
-        config = Namespace(region='eu-central')
+        argument_parser._action_groups = cast(list, [DummyGroup()])
         output = StringIO()
 
         # When
-        config_loader.dump(argument_parser, config, output)
+        with patch.object(sys, 'argv', ['test', '--region', 'eu-central']):
+            config_loader.dump(argument_parser, output)
 
         # Then
         parser = ConfigParser(interpolation=None)

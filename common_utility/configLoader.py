@@ -16,7 +16,7 @@ class IConfigLoader(object):
     def load(self, argument_parser: ArgumentParser) -> Namespace:
         raise NotImplementedError()
 
-    def dump(self, argument_parser: ArgumentParser, config: Namespace, file: TextIO = sys.stdout) -> None:
+    def dump(self, argument_parser: ArgumentParser, file: TextIO = sys.stdout) -> None:
         raise NotImplementedError()
 
 
@@ -60,7 +60,8 @@ class ConfigLoader(IConfigLoader):
 
         return Namespace(**configuration)
 
-    def dump(self, argument_parser: ArgumentParser, config: Namespace, file: TextIO = sys.stdout) -> None:
+    def dump(self, argument_parser: ArgumentParser, file: TextIO = sys.stdout) -> None:
+        arguments = argument_parser.parse_known_args()[0]
         for group in argument_parser._action_groups:
             section = group.title if group.title else 'DEFAULT'
             values = {}
@@ -68,7 +69,7 @@ class ConfigLoader(IConfigLoader):
             for action in group._group_actions:
                 if not action.dest or action.dest == "help":
                     continue
-                value = getattr(config, action.dest, None)
+                value = getattr(arguments, action.dest, None)
                 if value is None:
                     continue
                 values[action.dest] = str(value)
