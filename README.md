@@ -5,15 +5,15 @@
 | Name                                 |    Stmts |     Miss |   Branch |   BrPart |   Cover |   Missing |
 |------------------------------------- | -------: | -------: | -------: | -------: | ------: | --------: |
 | common\_utility/\_\_init\_\_.py      |        7 |        0 |        0 |        0 |    100% |           |
-| common\_utility/configLoader.py      |       34 |        0 |        6 |        1 |     98% |    35->48 |
+| common\_utility/configLoader.py      |       73 |        0 |       30 |        0 |    100% |           |
 | common\_utility/fileDownloader.py    |       67 |        0 |       20 |        0 |    100% |           |
 | common\_utility/fileUtility.py       |       53 |        1 |       14 |        1 |     97% |        44 |
 | common\_utility/interfaceResolver.py |       22 |        0 |        6 |        0 |    100% |           |
 | common\_utility/jsonLoader.py        |       31 |        1 |        4 |        1 |     94% |        51 |
 | common\_utility/rateLimiter.py       |       27 |        0 |        2 |        0 |    100% |           |
-| common\_utility/reusableTimer.py     |       37 |        0 |        6 |        2 |     95% |58->exit, 72->exit |
+| common\_utility/reusableTimer.py     |       37 |        0 |        6 |        2 |     95% |58-\>exit, 72-\>exit |
 | common\_utility/sessionProvider.py   |        6 |        1 |        0 |        0 |     83% |        17 |
-| **TOTAL**                            |  **284** |    **3** |   **58** |    **5** | **98%** |           |
+| **TOTAL**                            |  **323** |    **3** |   **82** |    **4** | **98%** |           |
 
 
 ## Setup coverage badge
