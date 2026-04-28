@@ -21,7 +21,8 @@ package-dir = {"" = "."}
 packages = ["common_utility", "test_utility"]
 
 [tool.setuptools.package-data]
-hello = ["py.typed"]
+common_utility = ["py.typed"]
+test_utility = ["py.typed"]
 
 [build-system]
 requires = ["setuptools>=61", "setuptools_scm"]
@@ -31,7 +32,7 @@ build-backend = "setuptools.build_meta"
 version_scheme = "guess-next-dev"
 local_scheme = "node-and-date"
 
-[tool.pytest]
+[tool.pytest.ini_options]
 addopts = ["--verbose", "--capture=no"]
 python_files = ["*Test.py"]
 python_classes = ["*Test"]
