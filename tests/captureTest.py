@@ -187,6 +187,24 @@ class BlobExtractorTest:
         with pytest.raises(ValueError, match="magic"):
             BlobExtractor(path).extract(tmp_path / "out")
 
+    def test_truncated_data_section_extracts_intact_images(self, tmp_path: pathlib.Path) -> None:
+        """Blob truncated partway into the third slot's data: first two images are still extracted."""
+        num_slots = 3
+        max_bytes = 512 * 1024
+        path = tmp_path / "truncated.blob"
+        blob = BlobFsCapture(path, num_slots=num_slots, max_image_bytes=max_bytes)
+        for name in ["a.png", "b.png", "c.png"]:
+            blob.capture(_make_image(), name)
+        blob.close()
+
+        # Keep the superblock, full index, and both first slots' data — cut 50 bytes into slot 2
+        data_section_start = SUPERBLOCK_SIZE + num_slots * INDEX_ENTRY_SIZE
+        path.write_bytes(path.read_bytes()[: data_section_start + 2 * max_bytes + 50])
+
+        extracted = BlobExtractor(path).extract(tmp_path / "out")
+        assert len(extracted) == 2
+        assert {p.name for p in extracted} == {"a.png", "b.png"}
+
     def test_corruption_resilience(self, tmp_path: pathlib.Path) -> None:
         """Simulates two interrupted writes; BlobExtractor must extract the 3 valid images."""
         path = tmp_path / "cap.blob"
