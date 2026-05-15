@@ -24,6 +24,9 @@ dev = [
     "flake8",
 ]
 
+[project.scripts]
+er-blob-extract = "common_utility.capture:main"
+
 [tool.setuptools]
 package-dir = {"" = "."}
 packages = ["common_utility", "test_utility"]
