@@ -462,7 +462,8 @@ class CaptureFactoryTest:
         args = parser.parse_args([])
         assert args.blob_capture_file == "capture.blob"
         assert args.blob_num_slots == 60
-        assert args.blob_max_image_bytes == 8 * 1024 * 1024
+        assert args.blob_max_image_bytes == 4 * 1024 * 1024
+        assert args.blob_png_compression == 1
 
     def test_add_args_allows_overrides(self) -> None:
         parser = argparse.ArgumentParser()

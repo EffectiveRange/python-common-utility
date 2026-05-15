@@ -43,9 +43,17 @@ def add_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--blob-max-image-bytes",
-        default=8 * 1024 * 1024,
+        default=4 * 1024 * 1024,
         type=int,
         help="Maximum bytes per image slot in the blob ring buffer",
+    )
+    parser.add_argument(
+        "--blob-png-compression",
+        default=1,
+        type=int,
+        choices=range(10),
+        metavar="0-9",
+        help="PNG compression level for captured images (0=none, 9=max); default 1 favours throughput",
     )
 
 
@@ -86,11 +94,13 @@ class BlobFsCapture(ImageCaptureInterface):
         self,
         blob_path: pathlib.Path,
         num_slots: int = 60,
-        max_image_bytes: int = 8 * 1024 * 1024,
+        max_image_bytes: int = 4 * 1024 * 1024,
+        png_compression: int = 1,
     ) -> None:
         self._blob_path = blob_path
         self._num_slots = num_slots
         self._max_image_bytes = max_image_bytes
+        self._png_compression = png_compression
         self._index_base = SUPERBLOCK_SIZE
         self._data_base = SUPERBLOCK_SIZE + num_slots * INDEX_ENTRY_SIZE
         self._file_size = self._data_base + num_slots * max_image_bytes
@@ -155,7 +165,7 @@ class BlobFsCapture(ImageCaptureInterface):
         if len(filename_bytes) > MAX_FILENAME_BYTES:
             raise ValueError(f"Filename too long: {len(filename_bytes)} bytes, max {MAX_FILENAME_BYTES}")
 
-        ok, buf = cv2.imencode(".png", image)
+        ok, buf = cv2.imencode(".png", image, [cv2.IMWRITE_PNG_COMPRESSION, self._png_compression])
         if not ok:
             raise ValueError("cv2.imencode failed to encode image as PNG")
         png_bytes = buf.tobytes()
@@ -256,8 +266,9 @@ class CompositeBlobCapture(ImageCaptureInterface):
         max_image_bytes: int,
         follow_up_count: int,
         completion_handler: BlobCompletionHandler,
+        png_compression: int = 1,
     ) -> None:
-        self._blob = BlobFsCapture(blob_path, num_slots, max_image_bytes)
+        self._blob = BlobFsCapture(blob_path, num_slots, max_image_bytes, png_compression)
         self._follow_up_count = follow_up_count
         self._completion_handler = completion_handler
         self._active: list[tuple[BlobFsCapture, str, int]] = []
@@ -306,24 +317,30 @@ class CompositeBlobCapture(ImageCaptureInterface):
 class BlobExtractor:
     def __init__(self, blob_path: pathlib.Path) -> None:
         self._blob_path = blob_path
-
-    def extract(self, dest_dir: pathlib.Path) -> list[pathlib.Path]:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        data = self._blob_path.read_bytes()
-
+        data = blob_path.read_bytes()
         if len(data) < SUPERBLOCK_SIZE:
             raise ValueError("File too small to contain a valid superblock")
-
-        magic, _version, num_slots, _write_head, _max_image_bytes, index_entry_size = struct.unpack_from(
+        magic, version, num_slots, write_head, max_image_bytes, index_entry_size = struct.unpack_from(
             SUPERBLOCK_FORMAT, data, 0
         )
         if magic != MAGIC:
             raise ValueError(f"Invalid blob magic: 0x{magic:08X}, expected 0x{MAGIC:08X}")
+        self._data = data
+        self.version = version
+        self.num_slots = num_slots
+        self.write_head = write_head
+        self.max_image_bytes = max_image_bytes
+        self.index_entry_size = index_entry_size
+        self._frame_flags: Optional[dict[str, int]] = None
+
+    def extract(self, dest_dir: pathlib.Path) -> list[pathlib.Path]:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        data = self._data
 
         extracted: list[pathlib.Path] = []
-        for i in range(num_slots):
-            idx_offset = SUPERBLOCK_SIZE + i * index_entry_size
-            if idx_offset + index_entry_size > len(data):
+        for i in range(self.num_slots):
+            idx_offset = SUPERBLOCK_SIZE + i * self.index_entry_size
+            if idx_offset + self.index_entry_size > len(data):
                 break
 
             image_offset, image_size, _flags, filename_len, _reserved, filename_raw = struct.unpack_from(
@@ -353,6 +370,30 @@ class BlobExtractor:
 
         return extracted
 
+    def _ensure_frame_flags(self) -> dict[str, int]:
+        if self._frame_flags is None:
+            frame_flags: dict[str, int] = {}
+            for i in range(self.num_slots):
+                idx_offset = SUPERBLOCK_SIZE + i * self.index_entry_size
+                if idx_offset + self.index_entry_size > len(self._data):
+                    break
+                _, img_size, flags, fn_len, _, fn_raw = struct.unpack_from(
+                    INDEX_ENTRY_FORMAT, self._data, idx_offset
+                )
+                if img_size > 0:
+                    raw_fn = fn_raw[:fn_len]
+                    try:
+                        fn = raw_fn.decode("utf-8")
+                    except UnicodeDecodeError:
+                        fn = raw_fn.decode("latin-1")
+                    frame_flags[fn] = flags
+            self._frame_flags = frame_flags
+            return frame_flags
+        return self._frame_flags
+
+    def get_filenames_with_flags(self, mask: int) -> set[str]:
+        return {fn for fn, flags in self._ensure_frame_flags().items() if flags & mask}
+
 
 def main() -> None:
 
@@ -376,31 +417,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.blob.exists():
+    try:
+        extractor = BlobExtractor(args.blob)
+    except FileNotFoundError:
         print(f"error: blob file not found: {args.blob}", file=sys.stderr)
         sys.exit(1)
-
-    data = args.blob.read_bytes()
-    if len(data) < SUPERBLOCK_SIZE:
-        print("error: file too small to be a valid blob", file=sys.stderr)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
-
-    magic, version, num_slots, write_head, max_image_bytes, index_entry_size = struct.unpack_from(
-        SUPERBLOCK_FORMAT, data, 0
-    )
-    if magic != MAGIC:
-        print(f"error: invalid magic 0x{magic:08X} (expected 0x{MAGIC:08X})", file=sys.stderr)
-        sys.exit(1)
-
-    trigger_names = get_trigger_names_from_blob(data, num_slots, index_entry_size)
 
     if args.info:
-        print_blob_info(args, data, version, num_slots, write_head, max_image_bytes, index_entry_size, trigger_names)
+        print_blob_info(
+            args, extractor._data, extractor.version, extractor.num_slots,
+            extractor.write_head, extractor.max_image_bytes,
+            extractor.index_entry_size, extractor.get_filenames_with_flags(TRIGGER_FRAME_FLAG),
+        )
         return
 
-    extracted = BlobExtractor(args.blob).extract(args.dest)
+    extracted = extractor.extract(args.dest)
     for path in sorted(extracted):
-        marker = "  [TRIGGER_FRAME_FLAG]" if path.name in trigger_names else ""
+        marker = "  [TRIGGER_FRAME_FLAG]" if path.name in extractor.get_filenames_with_flags(TRIGGER_FRAME_FLAG) else ""
         print(f"{path}{marker}")
     print(f"\nextracted {len(extracted)} image(s) to {args.dest}", file=sys.stderr)
 
@@ -436,22 +472,6 @@ def print_blob_info(
         print(f"trigger_frame: {trigger}")
 
 
-def get_trigger_names_from_blob(data: bytes, num_slots: int, index_entry_size: int) -> set[str]:
-    trigger_names: set[str] = set()
-    for i in range(num_slots):
-        idx_offset = SUPERBLOCK_SIZE + i * index_entry_size
-        if idx_offset + index_entry_size > len(data):
-            break
-        _img_off, img_size, flags, fn_len, _res, fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, idx_offset)
-        if img_size > 0 and flags & TRIGGER_FRAME_FLAG:
-            raw_fn = fn_raw[:fn_len]
-            try:
-                fn = raw_fn.decode("utf-8")
-            except UnicodeDecodeError:
-                fn = raw_fn.decode("latin-1")
-            trigger_names.add(fn)
-    return trigger_names
-
 
 def make_capture_backend(
     args: argparse.Namespace,
@@ -462,5 +482,6 @@ def make_capture_backend(
     blob_path = capture_folder / args.blob_capture_file
     num_slots: int = args.blob_num_slots
     max_image_bytes: int = args.blob_max_image_bytes
+    png_compression: int = args.blob_png_compression
     handler = completion_handler if completion_handler is not None else NoOpBlobCompletionHandler()
-    return CompositeBlobCapture(blob_path, num_slots, max_image_bytes, follow_up_count, handler)
+    return CompositeBlobCapture(blob_path, num_slots, max_image_bytes, follow_up_count, handler, png_compression)
