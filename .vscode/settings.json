@@ -12,9 +12,7 @@
     "black-formatter.interpreter": [
         "${workspaceFolder}/.venv/bin/python3"
     ],
-    "black-formatter.args": [
-        "--config=setup.cfg"
-    ],
+    "black-formatter.args": [],
     "python.analysis.typeCheckingMode": "standard",
     "python.testing.pytestArgs": [],
     "python-envs.pythonProjects": [

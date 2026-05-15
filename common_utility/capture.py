@@ -70,7 +70,6 @@ class NoOpBlobCompletionHandler(BlobCompletionHandler):
         pass
 
 
-
 def _quality_to_compress_level(quality: int) -> int:
     return max(0, min(9, round((100 - quality) * 9 / 100)))
 
