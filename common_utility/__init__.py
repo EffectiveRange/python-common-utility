@@ -5,3 +5,4 @@ from .fileDownloader import *
 from .configLoader import *
 from .rateLimiter import *
 from .interfaceResolver import *
+from .capture import *

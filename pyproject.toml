@@ -12,6 +12,8 @@ dependencies = [
     "pydantic",
     "jinja2",
     "netifaces",
+    "opencv-python",
+    "numpy",
     "python-context-logger @ git+https://github.com/EffectiveRange/python-context-logger.git@latest",
 ]
 dynamic = ["version"]
