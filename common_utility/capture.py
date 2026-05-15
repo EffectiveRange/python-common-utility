@@ -317,15 +317,26 @@ class CompositeBlobCapture(ImageCaptureInterface):
 class BlobExtractor:
     def __init__(self, blob_path: pathlib.Path) -> None:
         self._blob_path = blob_path
-        data = blob_path.read_bytes()
-        if len(data) < SUPERBLOCK_SIZE:
-            raise ValueError("File too small to contain a valid superblock")
-        magic, version, num_slots, write_head, max_image_bytes, index_entry_size = struct.unpack_from(
-            SUPERBLOCK_FORMAT, data, 0
-        )
-        if magic != MAGIC:
-            raise ValueError(f"Invalid blob magic: 0x{magic:08X}, expected 0x{MAGIC:08X}")
-        self._data = data
+        self._file: Optional[Any] = None
+        self._mm: Optional[mmap.mmap] = None
+        file = open(blob_path, "rb")
+        self._file = file
+        try:
+            file_size = os.path.getsize(blob_path)
+            if file_size < SUPERBLOCK_SIZE:
+                raise ValueError("File too small to contain a valid superblock")
+            self._mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+            magic, version, num_slots, write_head, max_image_bytes, index_entry_size = struct.unpack_from(
+                SUPERBLOCK_FORMAT, self._mm, 0
+            )
+            if magic != MAGIC:
+                raise ValueError(f"Invalid blob magic: 0x{magic:08X}, expected 0x{MAGIC:08X}")
+        except Exception:
+            if self._mm is not None:
+                self._mm.close()
+            file.close()
+            self._file = None
+            raise
         self.version = version
         self.num_slots = num_slots
         self.write_head = write_head
@@ -333,24 +344,38 @@ class BlobExtractor:
         self.index_entry_size = index_entry_size
         self._frame_flags: Optional[dict[str, int]] = None
 
+    def close(self) -> None:
+        if self._mm is not None:
+            self._mm.close()
+            self._mm = None
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def __enter__(self) -> BlobExtractor:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
     def extract(self, dest_dir: pathlib.Path) -> list[pathlib.Path]:
+        assert self._mm is not None
         dest_dir.mkdir(parents=True, exist_ok=True)
-        data = self._data
 
         extracted: list[pathlib.Path] = []
         for i in range(self.num_slots):
             idx_offset = SUPERBLOCK_SIZE + i * self.index_entry_size
-            if idx_offset + self.index_entry_size > len(data):
+            if idx_offset + self.index_entry_size > len(self._mm):
                 break
 
             image_offset, image_size, _flags, filename_len, _reserved, filename_raw = struct.unpack_from(
-                INDEX_ENTRY_FORMAT, data, idx_offset
+                INDEX_ENTRY_FORMAT, self._mm, idx_offset
             )
 
-            if image_size == 0 or image_offset + image_size > len(data):
+            if image_size == 0 or image_offset + image_size > len(self._mm):
                 continue
 
-            png_bytes = data[image_offset : image_offset + image_size]
+            png_bytes = bytes(self._mm[image_offset : image_offset + image_size])
             arr = np.frombuffer(png_bytes, dtype=np.uint8)
             if cv2.imdecode(arr, cv2.IMREAD_COLOR) is None:
                 continue
@@ -372,14 +397,13 @@ class BlobExtractor:
 
     def _ensure_frame_flags(self) -> dict[str, int]:
         if self._frame_flags is None:
+            assert self._mm is not None
             frame_flags: dict[str, int] = {}
             for i in range(self.num_slots):
                 idx_offset = SUPERBLOCK_SIZE + i * self.index_entry_size
-                if idx_offset + self.index_entry_size > len(self._data):
+                if idx_offset + self.index_entry_size > len(self._mm):
                     break
-                _, img_size, flags, fn_len, _, fn_raw = struct.unpack_from(
-                    INDEX_ENTRY_FORMAT, self._data, idx_offset
-                )
+                _, img_size, flags, fn_len, _, fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, self._mm, idx_offset)
                 if img_size > 0:
                     raw_fn = fn_raw[:fn_len]
                     try:
@@ -427,10 +451,16 @@ def main() -> None:
         sys.exit(1)
 
     if args.info:
+        assert extractor._mm is not None
         print_blob_info(
-            args, extractor._data, extractor.version, extractor.num_slots,
-            extractor.write_head, extractor.max_image_bytes,
-            extractor.index_entry_size, extractor.get_filenames_with_flags(TRIGGER_FRAME_FLAG),
+            args,
+            extractor._mm,
+            extractor.version,
+            extractor.num_slots,
+            extractor.write_head,
+            extractor.max_image_bytes,
+            extractor.index_entry_size,
+            extractor.get_filenames_with_flags(TRIGGER_FRAME_FLAG),
         )
         return
 
@@ -443,7 +473,7 @@ def main() -> None:
 
 def print_blob_info(
     args: Any,
-    data: bytes,
+    data: bytes | mmap.mmap,
     version: int,
     num_slots: int,
     write_head: int,
@@ -470,7 +500,6 @@ def print_blob_info(
     print(f"occupied_slots:   {occupied}/{num_slots}")
     for trigger in sorted(trigger_names):
         print(f"trigger_frame: {trigger}")
-
 
 
 def make_capture_backend(
