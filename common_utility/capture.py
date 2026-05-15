@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import mmap
-import re
 import struct
 import pathlib
 import os
+import sys
 import datetime
 from abc import ABC, abstractmethod
 from typing import Any, Optional
@@ -13,15 +13,6 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 from numpy.typing import NDArray
-
-from context_logger import get_logger
-
-log = get_logger("capture")
-
-# Timezone shift string shared with bird_recog for directory hierarchy and filenames
-_offset = datetime.datetime.now().astimezone().utcoffset()
-_tzshift = int(((_offset.total_seconds() if _offset is not None else 0) / 60 / 60) * 100)
-tzshift_str = f"{'p' if _tzshift >= 0 else 'm'}{abs(_tzshift):04d}"
 
 MAGIC: int = 0xEFFEC51E
 VERSION: int = 1
@@ -35,7 +26,7 @@ SUPERBLOCK_SIZE = struct.calcsize(SUPERBLOCK_FORMAT)
 INDEX_ENTRY_FORMAT = "<QQQII1024s"
 INDEX_ENTRY_SIZE = struct.calcsize(INDEX_ENTRY_FORMAT)
 
-TRIGGER_FRAME: int = 1
+TRIGGER_FRAME_FLAG: int = 1
 
 
 def add_args(parser: argparse.ArgumentParser) -> None:
@@ -70,37 +61,6 @@ class NoOpBlobCompletionHandler(BlobCompletionHandler):
         pass
 
 
-def _quality_to_compress_level(quality: int) -> int:
-    return max(0, min(9, round((100 - quality) * 9 / 100)))
-
-
-_PATTERN_RE = re.compile(r"X+")
-
-
-def _resolve_blob_pattern(pattern: pathlib.Path) -> pathlib.Path:
-    """Return the next sequential path for a pattern containing a run of 'X' chars.
-
-    Globs the parent directory, finds the highest existing index, and returns a
-    path with that index + 1 (starting at 1 when no files exist yet).
-    Example: Path('/tmp/capture-XXXXX.blob') with 'capture-00001.blob' already
-    present → Path('/tmp/capture-00002.blob').
-    If the name contains no 'X' run, the path is returned unchanged.
-    """
-    match = _PATTERN_RE.search(pattern.name)
-    if match is None:
-        return pattern
-    width = len(match.group())
-    prefix = pattern.name[: match.start()]
-    suffix = pattern.name[match.end() :]
-    parent = pattern.parent
-
-    existing = sorted(
-        p for p in parent.glob(f"{prefix}{'?' * width}{suffix}") if p.name[len(prefix) : len(prefix) + width].isdigit()
-    )
-    next_idx = int(existing[-1].name[len(prefix) : len(prefix) + width]) + 1 if existing else 1
-    return parent / f"{prefix}{next_idx:0{width}d}{suffix}"
-
-
 class ImageCaptureInterface(ABC):
     @abstractmethod
     def capture(self, image: NDArray[np.uint8], filename: str, flags: int = 0) -> None: ...
@@ -128,7 +88,7 @@ class BlobFsCapture(ImageCaptureInterface):
         num_slots: int = 60,
         max_image_bytes: int = 8 * 1024 * 1024,
     ) -> None:
-        self._blob_path = _resolve_blob_pattern(blob_path)
+        self._blob_path = blob_path
         self._num_slots = num_slots
         self._max_image_bytes = max_image_bytes
         self._index_base = SUPERBLOCK_SIZE
@@ -370,9 +330,7 @@ class BlobExtractor:
                 INDEX_ENTRY_FORMAT, data, idx_offset
             )
 
-            if image_size == 0:
-                continue
-            if image_offset + image_size > len(data):
+            if image_size == 0 or image_offset + image_size > len(data):
                 continue
 
             png_bytes = data[image_offset : image_offset + image_size]
@@ -397,13 +355,11 @@ class BlobExtractor:
 
 
 def main() -> None:
-    import argparse as _argparse
-    import sys
 
-    parser = _argparse.ArgumentParser(
-        prog="er-scarecrow-blob-extract",
+    parser = argparse.ArgumentParser(
+        prog="er-blob-extract",
         description="Extract PNG images from a BlobFsCapture ring-buffer file.",
-        formatter_class=_argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("blob", type=pathlib.Path, help="Path to the .blob file")
     parser.add_argument(
@@ -444,7 +400,7 @@ def main() -> None:
 
     extracted = BlobExtractor(args.blob).extract(args.dest)
     for path in sorted(extracted):
-        marker = "  [TRIGGER_FRAME]" if path.name in trigger_names else ""
+        marker = "  [TRIGGER_FRAME_FLAG]" if path.name in trigger_names else ""
         print(f"{path}{marker}")
     print(f"\nextracted {len(extracted)} image(s) to {args.dest}", file=sys.stderr)
 
@@ -487,7 +443,7 @@ def get_trigger_names_from_blob(data: bytes, num_slots: int, index_entry_size: i
         if idx_offset + index_entry_size > len(data):
             break
         _img_off, img_size, flags, fn_len, _res, fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, idx_offset)
-        if img_size > 0 and flags & TRIGGER_FRAME:
+        if img_size > 0 and flags & TRIGGER_FRAME_FLAG:
             raw_fn = fn_raw[:fn_len]
             try:
                 fn = raw_fn.decode("utf-8")

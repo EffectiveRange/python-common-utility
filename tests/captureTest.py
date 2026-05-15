@@ -16,7 +16,7 @@ from common_utility.capture import (
     SUPERBLOCK_SIZE,
     INDEX_ENTRY_FORMAT,
     INDEX_ENTRY_SIZE,
-    TRIGGER_FRAME,
+    TRIGGER_FRAME_FLAG,
     BlobCompletionHandler,
     NoOpBlobCompletionHandler,
     CompositeBlobCapture,
@@ -115,25 +115,25 @@ class BlobFsCaptureTest:
     def test_update_last_flags_overwrites_flags_field(self, tmp_path: pathlib.Path) -> None:
         blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "frame.png", flags=0)
-        blob.update_last_flags(TRIGGER_FRAME)
+        blob.update_last_flags(TRIGGER_FRAME_FLAG)
         blob.close()
         data = (tmp_path / "cap.blob").read_bytes()
         _img_off, _img_sz, flags, _fn_len, _res, _fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
-        assert flags == TRIGGER_FRAME
+        assert flags == TRIGGER_FRAME_FLAG
 
     def test_update_last_flags_targets_most_recent_slot(self, tmp_path: pathlib.Path) -> None:
         blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "first.png", flags=0)
         blob.capture(_make_image(), "second.png", flags=0)
-        blob.update_last_flags(TRIGGER_FRAME)
+        blob.update_last_flags(TRIGGER_FRAME_FLAG)
         blob.close()
         data = (tmp_path / "cap.blob").read_bytes()
         # slot 0 (first) must stay 0
         _a, _b, flags0, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags0 == 0
-        # slot 1 (second/last) must have TRIGGER_FRAME
+        # slot 1 (second/last) must have TRIGGER_FRAME_FLAG
         _a, _b, flags1, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE + INDEX_ENTRY_SIZE)
-        assert flags1 == TRIGGER_FRAME
+        assert flags1 == TRIGGER_FRAME_FLAG
 
 
 # ---------------------------------------------------------------------------
@@ -227,29 +227,11 @@ class BlobExtractorTest:
 
 
 class BlobPatternTest:
-    def test_pattern_creates_first_unused_file(self, tmp_path: pathlib.Path) -> None:
-        blob = BlobFsCapture(tmp_path / "cap-XXX.blob", num_slots=4, max_image_bytes=256 * 1024)
-        blob.close()
-        assert (tmp_path / "cap-001.blob").exists()
-
-    def test_pattern_skips_existing_files(self, tmp_path: pathlib.Path) -> None:
-        (tmp_path / "cap-001.blob").write_bytes(b"x")
-        (tmp_path / "cap-002.blob").write_bytes(b"x")
-        blob = BlobFsCapture(tmp_path / "cap-XXX.blob", num_slots=4, max_image_bytes=256 * 1024)
-        blob.close()
-        assert (tmp_path / "cap-003.blob").exists()
-
     def test_no_pattern_uses_literal_path(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "literal.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.close()
         assert path.exists()
-
-    def test_pattern_width_determines_padding(self, tmp_path: pathlib.Path) -> None:
-        blob = BlobFsCapture(tmp_path / "cap-XXXXX.blob", num_slots=4, max_image_bytes=256 * 1024)
-        blob.close()
-        assert (tmp_path / "cap-00001.blob").exists()
-
 
 # ---------------------------------------------------------------------------
 # rotate()
@@ -288,7 +270,7 @@ class RotateTest:
             assert {p.name for p in extracted_old} == {"before_rotate.png"}
             # New blob (original path): contains after_rotate.png
             dest2 = tmp_path / "from_new"
-            extracted_new = BlobExtractor(tmp_path / "cap-001.blob").extract(dest2)
+            extracted_new = BlobExtractor(tmp_path / "cap-XXX.blob").extract(dest2)
             assert {p.name for p in extracted_new} == {"after_rotate.png"}
         finally:
             pass  # already closed above
@@ -306,7 +288,7 @@ class RotateTest:
         # Three event blobs renamed + the primary still exists at cap-01.blob
         for eid in event_ids:
             assert (tmp_path / f"{eid}.blob").exists()
-        assert (tmp_path / "cap-01.blob").exists()
+        assert (tmp_path / "cap-XX.blob").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -385,14 +367,14 @@ class CompositeBlobCaptureTest:
 
     def test_trigger_frame_flag_in_primary_pre_rotation(self, tmp_path: pathlib.Path) -> None:
         comp = self._make_composite(tmp_path, follow_up=2)
-        comp.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME)
+        comp.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME_FLAG)
         primary_path = comp._blob._blob_path
         comp.rotate("ev-flag")
         comp.close()
         # The trigger frame is in the event blob (the file that was the primary before rotation)
         data = (tmp_path / "ev-flag.blob").read_bytes()
         _img_off, _img_sz, flags, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
-        assert flags == TRIGGER_FRAME
+        assert flags == TRIGGER_FRAME_FLAG
         # New primary blob has no entries yet (fresh)
         primary_data = primary_path.read_bytes()
         _magic2, _ver2, _slots2, wh2, *_ = struct.unpack_from(SUPERBLOCK_FORMAT, primary_data, 0)
@@ -401,7 +383,7 @@ class CompositeBlobCaptureTest:
     def test_follow_up_entries_have_zero_flags(self, tmp_path: pathlib.Path) -> None:
         follow_up = 2
         comp = self._make_composite(tmp_path, follow_up=follow_up)
-        comp.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME)
+        comp.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME_FLAG)
         comp.rotate("ev-flags")
         for i in range(follow_up):
             comp.capture(_make_image(), f"followup{i}.png")
@@ -416,12 +398,12 @@ class CompositeBlobCaptureTest:
     def test_update_last_flags_sets_flag_on_primary_blob(self, tmp_path: pathlib.Path) -> None:
         comp = self._make_composite(tmp_path)
         comp.capture(_make_image(), "frame.png", flags=0)
-        comp.update_last_flags(TRIGGER_FRAME)
+        comp.update_last_flags(TRIGGER_FRAME_FLAG)
         primary_path = comp._blob._blob_path
         comp.close()
         data = primary_path.read_bytes()
         _img_off, _img_sz, flags, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
-        assert flags == TRIGGER_FRAME
+        assert flags == TRIGGER_FRAME_FLAG
 
     def test_active_blob_path_returns_primary_path(self, tmp_path: pathlib.Path) -> None:
         comp = self._make_composite(tmp_path)
@@ -485,7 +467,9 @@ class CaptureFactoryTest:
     def test_add_args_allows_overrides(self) -> None:
         parser = argparse.ArgumentParser()
         add_args(parser)
-        args = parser.parse_args(["--blob-capture-file", "my.blob", "--blob-num-slots", "10", "--blob-max-image-bytes", "1024"])
+        args = parser.parse_args(
+            ["--blob-capture-file", "my.blob", "--blob-num-slots", "10", "--blob-max-image-bytes", "1024"]
+        )
         assert args.blob_capture_file == "my.blob"
         assert args.blob_num_slots == 10
         assert args.blob_max_image_bytes == 1024
@@ -512,7 +496,6 @@ class CaptureFactoryTest:
         handler.assert_called_once()
 
 
-
 # ---------------------------------------------------------------------------
 # blob-extract CLI — trigger frame annotation
 # ---------------------------------------------------------------------------
@@ -534,7 +517,7 @@ class BlobExtractCliTest:
         path = tmp_path / "test.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "before.png", flags=0)
-        blob.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME)
+        blob.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME_FLAG)
         blob.capture(_make_image(), "after.png", flags=0)
         blob.close()
         return path
@@ -543,14 +526,14 @@ class BlobExtractCliTest:
         blob_path = self._write_blob(tmp_path)
         output = _run_extract_cli(blob_path, tmp_path / "out")
         lines = {line.strip() for line in output.splitlines() if line.strip()}
-        assert any("trigger.png" in line and "[TRIGGER_FRAME]" in line for line in lines)
+        assert any("trigger.png" in line and "[TRIGGER_FRAME_FLAG]" in line for line in lines)
 
     def test_non_trigger_lines_have_no_annotation(self, tmp_path: pathlib.Path) -> None:
         blob_path = self._write_blob(tmp_path)
         output = _run_extract_cli(blob_path, tmp_path / "out")
         for line in output.splitlines():
             if "before.png" in line or "after.png" in line:
-                assert "[TRIGGER_FRAME]" not in line
+                assert "[TRIGGER_FRAME_FLAG]" not in line
 
     def test_no_trigger_frame_no_annotation(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "plain.blob"
@@ -559,13 +542,13 @@ class BlobExtractCliTest:
         blob.capture(_make_image(), "frame1.png", flags=0)
         blob.close()
         output = _run_extract_cli(path, tmp_path / "out")
-        assert "[TRIGGER_FRAME]" not in output
+        assert "[TRIGGER_FRAME_FLAG]" not in output
 
     def test_blob_info(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "info.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "frame0.png", flags=0)
-        blob.capture(_make_image(), "frame1.png", flags=TRIGGER_FRAME)
+        blob.capture(_make_image(), "frame1.png", flags=TRIGGER_FRAME_FLAG)
         blob.close()
         output = _run_extract_cli(path, tmp_path / "out", info=True)
 
