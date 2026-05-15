@@ -522,7 +522,7 @@ class CaptureFactoryTest:
 def _run_extract_cli(blob_path: pathlib.Path, dest: pathlib.Path, info: bool = False) -> str:
     """Run the extract CLI and return captured stdout."""
     stdout = io.StringIO()
-    argv = ["blob-extract", str(blob_path), str(dest)]
+    argv = ["blob-extract", f"--blob-capture-file={str(blob_path)}", str(dest)]
     if info:
         argv.append("--info")
     with patch("sys.argv", argv), patch("sys.stdout", stdout), patch("sys.stderr", io.StringIO()):
