@@ -5,5 +5,5 @@
 --log warn
 --python-bin python3
 --python-package-name-prefix python3
+--python-disable-dependency opencv-python-headless
 --depends python3-opencv
---depends python3-numpy
