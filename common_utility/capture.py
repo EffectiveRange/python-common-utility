@@ -426,7 +426,6 @@ def main() -> None:
         description="Extract PNG images from a BlobFsCapture ring-buffer file.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("blob", type=pathlib.Path, help="Path to the .blob file")
     parser.add_argument(
         "dest",
         type=pathlib.Path,
@@ -439,6 +438,7 @@ def main() -> None:
         action="store_true",
         help="Print blob metadata and slot summary without extracting images",
     )
+    add_args(parser)
     args = parser.parse_args()
 
     try:
