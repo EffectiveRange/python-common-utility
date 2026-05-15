@@ -8,11 +8,11 @@ import pathlib
 import os
 import datetime
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
-if TYPE_CHECKING:
-    import numpy as np
-    from numpy.typing import NDArray
+import cv2
+import numpy as np
+from numpy.typing import NDArray
 
 from context_logger import get_logger
 
@@ -69,22 +69,6 @@ class NoOpBlobCompletionHandler(BlobCompletionHandler):
     def __call__(self, event_id: str, blob: BlobFsCapture) -> None:
         pass
 
-
-def create_file_path_for_capture(
-    output_dir: str,
-    hierarchy_capture: bool,
-    dir_set: list[pathlib.Path],
-    capture_ts: datetime.datetime,
-    filename: str,
-) -> pathlib.Path:
-    if hierarchy_capture:
-        storage_path = output_dir + capture_ts.strftime("/%Y-%m-%d/%H/%M")
-        storage_path = storage_path + f"_{tzshift_str}"
-        if not os.path.exists(storage_path):
-            os.makedirs(storage_path)
-            dir_set.append(pathlib.Path(storage_path))
-        return pathlib.Path(os.path.join(storage_path, filename))
-    return pathlib.Path(os.path.join(output_dir, filename))
 
 
 def _quality_to_compress_level(quality: int) -> int:
@@ -207,19 +191,12 @@ class BlobFsCapture(ImageCaptureInterface):
         return self._data_base + slot * self._max_image_bytes
 
     def capture(self, image: NDArray[np.uint8], filename: str, flags: int = 0) -> None:
-        try:
-            import cv2 as _cv2
-        except ImportError:
-            raise ImportError(
-                "cv2 is required for image capture. "
-                "Install it with: pip install python-common-utility[imaging]"
-            ) from None
         assert self._mm is not None
         filename_bytes = filename.encode("utf-8")
         if len(filename_bytes) > MAX_FILENAME_BYTES:
             raise ValueError(f"Filename too long: {len(filename_bytes)} bytes, max {MAX_FILENAME_BYTES}")
 
-        ok, buf = _cv2.imencode(".png", image)
+        ok, buf = cv2.imencode(".png", image)
         if not ok:
             raise ValueError("cv2.imencode failed to encode image as PNG")
         png_bytes = buf.tobytes()
@@ -372,14 +349,6 @@ class BlobExtractor:
         self._blob_path = blob_path
 
     def extract(self, dest_dir: pathlib.Path) -> list[pathlib.Path]:
-        try:
-            import cv2 as _cv2
-            import numpy as _np
-        except ImportError:
-            raise ImportError(
-                "cv2 and numpy are required for blob extraction. "
-                "Install them with: pip install python-common-utility[imaging]"
-            ) from None
         dest_dir.mkdir(parents=True, exist_ok=True)
         data = self._blob_path.read_bytes()
 
@@ -408,8 +377,8 @@ class BlobExtractor:
                 continue
 
             png_bytes = data[image_offset : image_offset + image_size]
-            arr = _np.frombuffer(png_bytes, dtype=_np.uint8)
-            if _cv2.imdecode(arr, _cv2.IMREAD_COLOR) is None:
+            arr = np.frombuffer(png_bytes, dtype=np.uint8)
+            if cv2.imdecode(arr, cv2.IMREAD_COLOR) is None:
                 continue
 
             raw_fn = filename_raw[:filename_len]

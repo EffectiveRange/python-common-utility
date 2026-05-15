@@ -23,9 +23,7 @@ from common_utility.capture import (
     BlobFsCapture,
     BlobExtractor,
     MAX_FILENAME_BYTES,
-    _resolve_blob_pattern,
     add_args,
-    create_file_path_for_capture,
     make_capture_backend,
     main as blob_extract_main,
 )
@@ -471,7 +469,7 @@ class CompositeBlobCaptureTest:
 
 
 # ---------------------------------------------------------------------------
-# add_args / make_capture_backend / create_file_path_for_capture
+# add_args / make_capture_backend
 # ---------------------------------------------------------------------------
 
 
@@ -513,30 +511,6 @@ class CaptureFactoryTest:
         backend.close()
         handler.assert_called_once()
 
-    def test_create_file_path_without_hierarchy(self, tmp_path: pathlib.Path) -> None:
-        dir_set: list[pathlib.Path] = []
-        ts = datetime.datetime(2024, 6, 15, 10, 30)
-        result = create_file_path_for_capture(str(tmp_path), False, dir_set, ts, "frame.png")
-        assert result == tmp_path / "frame.png"
-        assert dir_set == []
-
-    def test_create_file_path_with_hierarchy(self, tmp_path: pathlib.Path) -> None:
-        dir_set: list[pathlib.Path] = []
-        ts = datetime.datetime(2024, 6, 15, 10, 30)
-        result = create_file_path_for_capture(str(tmp_path), True, dir_set, ts, "frame.png")
-        assert "2024-06-15" in str(result)
-        assert result.name == "frame.png"
-        assert len(dir_set) == 1
-        assert dir_set[0].exists()
-
-    def test_create_file_path_with_hierarchy_reuses_existing_dir(self, tmp_path: pathlib.Path) -> None:
-        ts = datetime.datetime(2024, 6, 15, 10, 30)
-        dir_set1: list[pathlib.Path] = []
-        create_file_path_for_capture(str(tmp_path), True, dir_set1, ts, "a.png")
-        dir_set2: list[pathlib.Path] = []
-        create_file_path_for_capture(str(tmp_path), True, dir_set2, ts, "b.png")
-        # Second call must not append to dir_set since directory already exists
-        assert dir_set2 == []
 
 
 # ---------------------------------------------------------------------------
