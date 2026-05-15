@@ -12,9 +12,21 @@ dependencies = [
     "pydantic",
     "jinja2",
     "netifaces",
+    "opencv-python-headless",
+    "numpy",
     "python-context-logger @ git+https://github.com/EffectiveRange/python-context-logger.git@latest",
 ]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "mypy",
+    "flake8",
+    "pytest-cov",
+]
+
+[project.scripts]
+er-blob-extract = "common_utility.capture:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
@@ -31,6 +43,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"
 local_scheme = "node-and-date"
+
+[tool.black]
+line-length = 120
 
 [tool.pytest.ini_options]
 addopts = ["--verbose", "--capture=no"]
