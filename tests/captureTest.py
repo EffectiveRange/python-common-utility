@@ -1,9 +1,7 @@
 import argparse
-import datetime
 import io
 import pathlib
 import struct
-import sys
 
 import numpy as np
 import pytest
@@ -250,6 +248,7 @@ class BlobPatternTest:
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.close()
         assert path.exists()
+
 
 # ---------------------------------------------------------------------------
 # rotate()
