@@ -119,6 +119,46 @@ class BlobFsCaptureTest:
         _img_off, _img_sz, flags, _fn_len, _res, _fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags == TRIGGER_FRAME_FLAG
 
+    def test_reopen_size_mismatch_raises(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        blob.close()
+        with open(path, "ab") as f:
+            f.write(b"\x00")
+        with pytest.raises(ValueError, match="size mismatch"):
+            BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+
+    def test_get_last_filepath_returns_none(self, tmp_path: pathlib.Path) -> None:
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=256 * 1024)
+        assert blob.get_last_filepath() is None
+        blob.close()
+
+    def test_set_capture_ts_is_a_no_op(self, tmp_path: pathlib.Path) -> None:
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=256 * 1024)
+        blob.set_capture_ts(MagicMock())
+        blob.close()
+
+    def test_active_blob_path_returns_blob_path(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        assert blob.active_blob_path() == path
+        blob.close()
+
+    def test_reopen_existing_blob_restores_write_head(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        blob.capture(_make_image(), "frame.png")
+        expected_head = blob._write_head
+        blob.close()
+        reopened = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        assert reopened._write_head == expected_head
+        reopened.close()
+
+    def test_double_close_is_safe(self, tmp_path: pathlib.Path) -> None:
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=256 * 1024)
+        blob.close()
+        blob.close()
+
     def test_update_last_flags_targets_most_recent_slot(self, tmp_path: pathlib.Path) -> None:
         blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "first.png", flags=0)
@@ -202,6 +242,65 @@ class BlobExtractorTest:
         extracted = BlobExtractor(path).extract(tmp_path / "out")
         assert len(extracted) == 2
         assert {p.name for p in extracted} == {"a.png", "b.png"}
+
+    def test_double_close_is_safe(self, tmp_path: pathlib.Path) -> None:
+        path = self._write_blob(tmp_path, [(_make_image(), "frame.png")])
+        e = BlobExtractor(path)
+        e.close()
+        e.close()
+
+    def test_file_too_small_raises(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "tiny.blob"
+        path.write_bytes(b"\x00" * (SUPERBLOCK_SIZE - 1))
+        with pytest.raises(ValueError, match="too small"):
+            BlobExtractor(path)
+
+    def test_context_manager_and_truncated_index_breaks_early(self, tmp_path: pathlib.Path) -> None:
+        """Index truncated mid-second-entry: extract() and get_filenames_with_flags() both break early."""
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
+        blob.capture(_make_image(), "frame.png")
+        blob.close()
+        # Cut in the middle of the second index entry so the loop must break
+        truncate_at = SUPERBLOCK_SIZE + INDEX_ENTRY_SIZE + INDEX_ENTRY_SIZE // 2
+        path.write_bytes(path.read_bytes()[:truncate_at])
+        with BlobExtractor(path) as e:
+            extracted = e.extract(tmp_path / "out")
+            trigger_names = e.get_filenames_with_flags(TRIGGER_FRAME_FLAG)
+        assert extracted == []
+        assert trigger_names == set()
+        assert e._mm is None  # context manager closed it
+
+    def test_zero_filename_len_uses_slot_index_fallback(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
+        blob.capture(_make_image(), "real.png")
+        blob.close()
+        # fn_len is at byte 24 within the slot-0 index entry
+        raw = bytearray(path.read_bytes())
+        struct.pack_into("<I", raw, SUPERBLOCK_SIZE + 24, 0)
+        path.write_bytes(bytes(raw))
+        extracted = BlobExtractor(path).extract(tmp_path / "out")
+        assert len(extracted) == 1
+        assert extracted[0].name == "slot_0000.png"
+
+    def test_latin1_filename_decoded_in_extract_and_frame_flags(self, tmp_path: pathlib.Path) -> None:
+        """Filename bytes invalid in UTF-8 but valid in latin-1 are decoded correctly in both paths."""
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
+        blob.capture(_make_image(), "placeholder.png")
+        blob.close()
+        # Patch slot-0 index: set a latin-1 filename (0xE9 = é, not valid UTF-8)
+        latin1_name = b"caf\xe9.png"
+        raw = bytearray(path.read_bytes())
+        struct.pack_into("<I", raw, SUPERBLOCK_SIZE + 24, len(latin1_name))  # fn_len
+        raw[SUPERBLOCK_SIZE + 32 : SUPERBLOCK_SIZE + 32 + len(latin1_name)] = latin1_name
+        path.write_bytes(bytes(raw))
+        with BlobExtractor(path) as e:
+            extracted = e.extract(tmp_path / "out")
+            e.get_filenames_with_flags(TRIGGER_FRAME_FLAG)
+        assert len(extracted) == 1
+        assert extracted[0].name == "café.png"
 
     def test_corruption_resilience(self, tmp_path: pathlib.Path) -> None:
         """Simulates two interrupted writes; BlobExtractor must extract the 3 valid images."""
@@ -455,6 +554,16 @@ class CompositeBlobCaptureTest:
         assert len(comp._active) == 0
         comp.close()
 
+    def test_set_capture_ts_delegates_to_primary(self, tmp_path: pathlib.Path) -> None:
+        comp = self._make_composite(tmp_path)
+        comp.set_capture_ts(MagicMock())
+        comp.close()
+
+    def test_get_last_filepath_delegates_to_primary(self, tmp_path: pathlib.Path) -> None:
+        comp = self._make_composite(tmp_path)
+        assert comp.get_last_filepath() is None
+        comp.close()
+
     def test_rotate_immediate_does_not_deliver_follow_up_frames(self, tmp_path: pathlib.Path) -> None:
         handler = MagicMock(spec=BlobCompletionHandler)
         comp = self._make_composite(tmp_path, follow_up=3, handler=handler)
@@ -561,6 +670,26 @@ class BlobExtractCliTest:
         blob.close()
         output = _run_extract_cli(path, tmp_path / "out")
         assert "[TRIGGER_FRAME_FLAG]" not in output
+
+    def test_missing_blob_exits_with_error(self, tmp_path: pathlib.Path) -> None:
+        stderr = io.StringIO()
+        argv = ["blob-extract", f"--blob-capture-file={tmp_path / 'nonexistent.blob'}", str(tmp_path / "out")]
+        with patch("sys.argv", argv), patch("sys.stderr", stderr):
+            with pytest.raises(SystemExit) as exc:
+                blob_extract_main()
+        assert exc.value.code == 1
+        assert "not found" in stderr.getvalue()
+
+    def test_invalid_blob_exits_with_error(self, tmp_path: pathlib.Path) -> None:
+        path = tmp_path / "bad.blob"
+        path.write_bytes(b"\xff" * SUPERBLOCK_SIZE)
+        stderr = io.StringIO()
+        argv = ["blob-extract", f"--blob-capture-file={path}", str(tmp_path / "out")]
+        with patch("sys.argv", argv), patch("sys.stderr", stderr):
+            with pytest.raises(SystemExit) as exc:
+                blob_extract_main()
+        assert exc.value.code == 1
+        assert "error" in stderr.getvalue()
 
     def test_blob_info(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "info.blob"
