@@ -53,16 +53,19 @@ class BlobFsCaptureTest:
         magic = struct.unpack_from("<I", data, 0)[0]
         assert magic == MAGIC
 
-    def test_reopen_validates_magic(self, tmp_path: pathlib.Path) -> None:
+    def test_open_on_existing_path_creates_fresh_blob(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "cap.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.close()
-        # Corrupt magic
+        # Corrupt magic — new behaviour deletes the file and starts fresh
         raw = bytearray(path.read_bytes())
         struct.pack_into("<I", raw, 0, 0xDEADBEEF)
         path.write_bytes(bytes(raw))
-        with pytest.raises(ValueError, match="magic"):
-            BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        reopened = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        reopened.close()
+        data = path.read_bytes()
+        magic = struct.unpack_from("<I", data, 0)[0]
+        assert magic == MAGIC
 
     def test_write_and_ring_wrap(self, tmp_path: pathlib.Path) -> None:
         num_slots = 3
@@ -119,14 +122,17 @@ class BlobFsCaptureTest:
         _img_off, _img_sz, flags, _fn_len, _res, _fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags == TRIGGER_FRAME_FLAG
 
-    def test_reopen_size_mismatch_raises(self, tmp_path: pathlib.Path) -> None:
+    def test_open_on_size_mismatch_creates_fresh_blob(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "cap.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.close()
         with open(path, "ab") as f:
             f.write(b"\x00")
-        with pytest.raises(ValueError, match="size mismatch"):
-            BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        # New behaviour: size mismatch is resolved by deleting and recreating
+        reopened = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
+        reopened.close()
+        expected = SUPERBLOCK_SIZE + 4 * INDEX_ENTRY_SIZE + 4 * 256 * 1024
+        assert path.stat().st_size == expected
 
     def test_get_last_filepath_returns_none(self, tmp_path: pathlib.Path) -> None:
         blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=256 * 1024)
@@ -144,14 +150,14 @@ class BlobFsCaptureTest:
         assert blob.active_blob_path() == path
         blob.close()
 
-    def test_reopen_existing_blob_restores_write_head(self, tmp_path: pathlib.Path) -> None:
+    def test_open_always_starts_with_zero_write_head(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "cap.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.capture(_make_image(), "frame.png")
-        expected_head = blob._write_head
         blob.close()
+        # New behaviour: existing file is deleted; fresh blob always starts at write_head == 0
         reopened = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
-        assert reopened._write_head == expected_head
+        assert reopened._write_head == 0
         reopened.close()
 
     def test_double_close_is_safe(self, tmp_path: pathlib.Path) -> None:

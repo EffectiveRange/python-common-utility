@@ -110,10 +110,7 @@ class BlobFsCapture(ImageCaptureInterface):
         self._open()
 
     def _open(self) -> None:
-        if not self._blob_path.exists():
-            self._create()
-        else:
-            self._reopen()
+        self._reopen()
 
     def _create(self) -> None:
         self._blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,19 +123,9 @@ class BlobFsCapture(ImageCaptureInterface):
         self._flush_superblock()
 
     def _reopen(self) -> None:
-        self._file = open(self._blob_path, "r+b")
-        actual_size = os.path.getsize(self._blob_path)
-        if actual_size != self._file_size:
-            self._file.close()
-            raise ValueError(f"Blob file size mismatch: expected {self._file_size}, got {actual_size}")
-        self._mm = mmap.mmap(self._file.fileno(), self._file_size)
-        fields = struct.unpack_from(SUPERBLOCK_FORMAT, self._mm, 0)
-        magic = fields[0]
-        if magic != MAGIC:
-            self._mm.close()
-            self._file.close()
-            raise ValueError(f"Invalid blob magic: 0x{magic:08X}, expected 0x{MAGIC:08X}")
-        self._write_head = fields[3]
+        if self._blob_path.exists():
+            os.unlink(self._blob_path)
+        self._create()
 
     def _flush_superblock(self) -> None:
         data = struct.pack(
