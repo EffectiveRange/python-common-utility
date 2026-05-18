@@ -2,6 +2,7 @@ import argparse
 import io
 import pathlib
 import struct
+import tarfile
 
 import numpy as np
 import pytest
@@ -340,6 +341,95 @@ class BlobExtractorTest:
         extracted = BlobExtractor(path).extract(dest)
         assert len(extracted) == 3
         assert {p.name for p in extracted} == {"valid_0.png", "valid_1.png", "valid_2.png"}
+
+
+# ---------------------------------------------------------------------------
+# BlobExtractor — tar/tar.gz archive support
+# ---------------------------------------------------------------------------
+
+
+class BlobExtractorTarTest:
+    def _write_blob(self, tmp_path: pathlib.Path, images_and_names: list[tuple]) -> pathlib.Path:
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=5, max_image_bytes=512 * 1024)
+        for img, fn in images_and_names:
+            blob.capture(img, fn)
+        blob.close()
+        return path
+
+    def test_extract_from_tar(self, tmp_path: pathlib.Path) -> None:
+        names = ["a.png", "b.png", "c.png"]
+        blob_path = self._write_blob(tmp_path, [(_make_image(), n) for n in names])
+        tar_path = tmp_path / "cap.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            tf.add(blob_path, arcname="cap.blob")
+        dest = tmp_path / "out"
+        extracted = BlobExtractor(tar_path).extract(dest)
+        assert len(extracted) == 3
+        assert {p.name for p in extracted} == set(names)
+
+    def test_extract_from_tar_gz(self, tmp_path: pathlib.Path) -> None:
+        names = ["x.png", "y.png"]
+        blob_path = self._write_blob(tmp_path, [(_make_image(), n) for n in names])
+        tar_path = tmp_path / "cap.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(blob_path, arcname="cap.blob")
+        dest = tmp_path / "out"
+        extracted = BlobExtractor(tar_path).extract(dest)
+        assert len(extracted) == 2
+        assert {p.name for p in extracted} == set(names)
+
+    def test_tar_prefers_blob_extension_member(self, tmp_path: pathlib.Path) -> None:
+        """When archive contains multiple files, a member with .blob extension is preferred."""
+        blob_path = self._write_blob(tmp_path, [(_make_image(), "frame.png")])
+        dummy = tmp_path / "readme.txt"
+        dummy.write_text("hello")
+        tar_path = tmp_path / "multi.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            tf.add(dummy, arcname="readme.txt")
+            tf.add(blob_path, arcname="cap.blob")
+        dest = tmp_path / "out"
+        extracted = BlobExtractor(tar_path).extract(dest)
+        assert len(extracted) == 1
+        assert extracted[0].name == "frame.png"
+
+    def test_tar_tempdir_cleaned_up_on_close(self, tmp_path: pathlib.Path) -> None:
+        blob_path = self._write_blob(tmp_path, [(_make_image(), "f.png")])
+        tar_path = tmp_path / "cap.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(blob_path, arcname="cap.blob")
+        e = BlobExtractor(tar_path)
+        assert e._tempdir is not None
+        tempdir_path = pathlib.Path(e._tempdir.name)
+        assert tempdir_path.exists()
+        e.close()
+        assert not tempdir_path.exists()
+
+    def test_tar_context_manager_cleans_up_tempdir(self, tmp_path: pathlib.Path) -> None:
+        blob_path = self._write_blob(tmp_path, [(_make_image(), "g.png")])
+        tar_path = tmp_path / "cap.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(blob_path, arcname="cap.blob")
+        with BlobExtractor(tar_path) as e:
+            assert e._tempdir is not None
+            tempdir_path = pathlib.Path(e._tempdir.name)
+        assert not tempdir_path.exists()
+
+    def test_empty_tar_raises(self, tmp_path: pathlib.Path) -> None:
+        tar_path = tmp_path / "empty.tar"
+        with tarfile.open(tar_path, "w"):
+            pass
+        with pytest.raises(ValueError, match="No regular file"):
+            BlobExtractor(tar_path)
+
+    def test_non_tar_blob_unaffected(self, tmp_path: pathlib.Path) -> None:
+        """A regular blob file is still opened directly without a tempdir."""
+        blob_path = self._write_blob(tmp_path, [(_make_image(), "direct.png")])
+        with BlobExtractor(blob_path) as e:
+            assert e._tempdir is None
+            extracted = e.extract(tmp_path / "out")
+        assert len(extracted) == 1
+        assert extracted[0].name == "direct.png"
 
 
 # ---------------------------------------------------------------------------

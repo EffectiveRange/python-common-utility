@@ -7,6 +7,8 @@ import pathlib
 import os
 import sys
 import datetime
+import tarfile
+import tempfile
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -306,10 +308,12 @@ class BlobExtractor:
         self._blob_path = blob_path
         self._file: Optional[Any] = None
         self._mm: Optional[mmap.mmap] = None
-        file = open(blob_path, "rb")
+        self._tempdir: Optional[tempfile.TemporaryDirectory] = None  # type: ignore[type-arg]
+        actual_path = self._resolve_blob_path(blob_path)
+        file = open(actual_path, "rb")
         self._file = file
         try:
-            file_size = os.path.getsize(blob_path)
+            file_size = os.path.getsize(actual_path)
             if file_size < SUPERBLOCK_SIZE:
                 raise ValueError("File too small to contain a valid superblock")
             self._mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
@@ -323,6 +327,9 @@ class BlobExtractor:
                 self._mm.close()
             file.close()
             self._file = None
+            if self._tempdir is not None:
+                self._tempdir.cleanup()
+                self._tempdir = None
             raise
         self.version = version
         self.num_slots = num_slots
@@ -331,6 +338,29 @@ class BlobExtractor:
         self.index_entry_size = index_entry_size
         self._frame_flags: Optional[dict[str, int]] = None
 
+    def _resolve_blob_path(self, blob_path: pathlib.Path) -> pathlib.Path:
+        if not tarfile.is_tarfile(blob_path):
+            return blob_path
+        tmpdir = tempfile.TemporaryDirectory()
+        self._tempdir = tmpdir
+        try:
+            with tarfile.open(blob_path) as tf:
+                members = [m for m in tf.getmembers() if m.isfile()]
+                blob_members = [m for m in members if m.name.endswith(".blob")]
+                member = blob_members[0] if blob_members else (members[0] if members else None)
+                if member is None:
+                    raise ValueError(f"No regular file found in archive: {blob_path}")
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"Cannot extract member from archive: {member.name}")
+                actual_path = pathlib.Path(tmpdir.name) / pathlib.Path(member.name).name
+                actual_path.write_bytes(extracted.read())
+                return actual_path
+        except Exception:
+            tmpdir.cleanup()
+            self._tempdir = None
+            raise
+
     def close(self) -> None:
         if self._mm is not None:
             self._mm.close()
@@ -338,6 +368,9 @@ class BlobExtractor:
         if self._file is not None:
             self._file.close()
             self._file = None
+        if self._tempdir is not None:
+            self._tempdir.cleanup()
+            self._tempdir = None
 
     def __enter__(self) -> BlobExtractor:
         return self
