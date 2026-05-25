@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import mmap
+import shutil
 import struct
 import pathlib
 import os
@@ -31,27 +33,34 @@ INDEX_ENTRY_SIZE = struct.calcsize(INDEX_ENTRY_FORMAT)
 TRIGGER_FRAME_FLAG: int = 1
 
 
-def add_args(parser: argparse.ArgumentParser) -> None:
+def add_args(parser: argparse.ArgumentParser, **defaults: dict[str, Any]) -> None:
     parser.add_argument(
         "--blob-capture-file",
-        default="capture.blob",
-        help="Name of the blob ring-buffer file, stored under the capture folder",
+        default=defaults.get("blob_capture_file", "capture.blob"),
+        help="Full path to the active blob ring-buffer file (e.g. a tmpfs location)",
+        type=pathlib.Path,
+    )
+    parser.add_argument(
+        "--blob-capture-folder",
+        default=defaults.get("blob_capture_folder", "."),
+        help="Folder for the rotated blob capture files (created if absent)",
+        type=pathlib.Path,
     )
     parser.add_argument(
         "--blob-num-slots",
-        default=60,
+        default=defaults.get("blob_num_slots", 60),
         type=int,
         help="Number of image slots in the blob ring buffer",
     )
     parser.add_argument(
         "--blob-max-image-bytes",
-        default=4 * 1024 * 1024,
+        default=defaults.get("blob_max_image_bytes", 4 * 1024 * 1024),
         type=int,
         help="Maximum bytes per image slot in the blob ring buffer",
     )
     parser.add_argument(
         "--blob-png-compression",
-        default=1,
+        default=defaults.get("blob_png_compression", 1),
         type=int,
         choices=range(10),
         metavar="0-9",
@@ -60,14 +69,28 @@ def add_args(parser: argparse.ArgumentParser) -> None:
 
 
 class BlobCompletionHandler(ABC):
-    """Invoked when a rotated event blob has received all its follow-up writes."""
+    """Invoked when a rotation event is complete.
+
+    blob_path is the primary (pre-rotation) blob; additional_blobs contains the post blob
+    path when one was opened (empty for immediate rotations).
+    """
 
     @abstractmethod
-    def __call__(self, event_id: str, blob: BlobFsCapture) -> None: ...
+    def __call__(
+        self,
+        event_id: str,
+        blob_path: pathlib.Path,
+        additional_blobs: list[pathlib.Path],
+    ) -> None: ...
 
 
 class NoOpBlobCompletionHandler(BlobCompletionHandler):
-    def __call__(self, event_id: str, blob: BlobFsCapture) -> None:
+    def __call__(
+        self,
+        event_id: str,
+        blob_path: pathlib.Path,
+        additional_blobs: list[pathlib.Path],
+    ) -> None:
         pass
 
 
@@ -98,11 +121,13 @@ class BlobFsCapture(ImageCaptureInterface):
         num_slots: int = 60,
         max_image_bytes: int = 4 * 1024 * 1024,
         png_compression: int = 1,
+        capture_folder: Optional[pathlib.Path] = None,
     ) -> None:
         self._blob_path = blob_path
         self._num_slots = num_slots
         self._max_image_bytes = max_image_bytes
         self._png_compression = png_compression
+        self._capture_folder = capture_folder
         self._index_base = SUPERBLOCK_SIZE
         self._data_base = SUPERBLOCK_SIZE + num_slots * INDEX_ENTRY_SIZE
         self._file_size = self._data_base + num_slots * max_image_bytes
@@ -166,10 +191,8 @@ class BlobFsCapture(ImageCaptureInterface):
         data_offset = self._slot_data_offset(slot)
         idx_offset = self._slot_index_offset(slot)
 
-        # Write image data into the slot's region
         self._mm[data_offset : data_offset + len(png_bytes)] = png_bytes
 
-        # Write index entry
         filename_padded = filename_bytes.ljust(MAX_FILENAME_BYTES, b"\x00")
         entry = struct.pack(
             INDEX_ENTRY_FORMAT,
@@ -182,7 +205,6 @@ class BlobFsCapture(ImageCaptureInterface):
         )
         self._mm[idx_offset : idx_offset + INDEX_ENTRY_SIZE] = entry
 
-        # Advance write_head and persist to superblock
         self._write_head = (self._write_head + 1) % self._num_slots
         struct.pack_into("<I", self._mm, 12, self._write_head)
 
@@ -205,25 +227,19 @@ class BlobFsCapture(ImageCaptureInterface):
         self._mm.flush()
 
     def rotate(self, event_id: str, immediate: bool = False) -> BlobFsCapture:
-        """Rename the current blob to <event_id>.blob and open a fresh one at the original path.
+        """Close the current blob, move it to capture_folder (or same dir) as <event_id>.blob, then reopen fresh."""
+        self.close()
 
-        The current file handle and mmap are transferred to a new BlobFsCapture wrapper (the
-        "old handle") which is returned to the caller.  On Linux, renaming an open/mmap'd file
-        preserves the inode so the old handle remains valid after the rename.
-        """
-        old: BlobFsCapture = object.__new__(BlobFsCapture)
-        old.__dict__.update(self.__dict__)
+        if self._capture_folder is not None:
+            self._capture_folder.mkdir(parents=True, exist_ok=True)
+            dest = self._capture_folder / f"{event_id}.blob"
+            shutil.move(str(self._blob_path), str(dest))
+        else:
+            dest = self._blob_path.parent / f"{event_id}.blob"
+            os.rename(self._blob_path, dest)
 
-        renamed = self._blob_path.parent / f"{event_id}.blob"
-        os.rename(self._blob_path, renamed)
-        old._blob_path = renamed
-
-        self._file = None
-        self._mm = None
-        self._write_head = 0
         self._open()
-
-        return old
+        return self
 
     def close(self) -> None:
         if self._mm is not None:
@@ -242,25 +258,36 @@ class BlobFsCapture(ImageCaptureInterface):
 
 
 class CompositeBlobCapture(ImageCaptureInterface):
-    """Composite capture backend: one primary blob + a list of recently-rotated event blobs.
+    """Composite capture backend: one primary blob on a fast path (e.g. tmpfs) + one optional
+    post-event blob in the capture folder receiving follow-up frames after rotation.
 
-    After rotation each event blob receives `follow_up_count` additional frames (flags=0),
-    then is closed and the completion handler is invoked.
+    On rotate(event_id):
+      - The primary blob is closed and moved to capture_folder/{event_id}.blob.
+      - A fresh primary blob is opened at the original blob_path.
+      - A new {event_id}-post.blob is opened in capture_folder to receive follow_up_count frames.
+      - At most one post blob is active at a time; a second rotation force-completes the existing one.
     """
 
     def __init__(
         self,
         blob_path: pathlib.Path,
+        capture_folder: pathlib.Path,
         num_slots: int,
         max_image_bytes: int,
         follow_up_count: int,
         completion_handler: BlobCompletionHandler,
         png_compression: int = 1,
     ) -> None:
-        self._blob = BlobFsCapture(blob_path, num_slots, max_image_bytes, png_compression)
+        self._capture_folder = capture_folder
+        self._num_slots = num_slots
+        self._max_image_bytes = max_image_bytes
+        self._png_compression = png_compression
+        self._blob = BlobFsCapture(
+            blob_path, num_slots, max_image_bytes, png_compression, capture_folder=capture_folder
+        )
         self._follow_up_count = follow_up_count
         self._completion_handler = completion_handler
-        self._active: list[tuple[BlobFsCapture, str, int]] = []
+        self._post_blob: Optional[tuple[BlobFsCapture, str, int]] = None
 
     def set_capture_ts(self, ts: datetime.datetime) -> None:
         self._blob.set_capture_ts(ts)
@@ -270,30 +297,48 @@ class CompositeBlobCapture(ImageCaptureInterface):
 
     def capture(self, image: NDArray[np.uint8], filename: str, flags: int = 0) -> None:
         self._blob.capture(image, filename, flags)
-        next_active: list[tuple[BlobFsCapture, str, int]] = []
-        for blob, event_id, remaining in self._active:
-            blob.capture(image, filename, 0)
+        if self._post_blob is not None:
+            post_b, post_event_id, remaining = self._post_blob
+            post_b.capture(image, filename, 0)
             remaining -= 1
             if remaining > 0:
-                next_active.append((blob, event_id, remaining))
+                self._post_blob = (post_b, post_event_id, remaining)
             else:
-                blob.close()
-                self._completion_handler(event_id, blob)
-        self._active = next_active
+                post_b.close()
+                self._completion_handler(
+                    post_event_id,
+                    self._capture_folder / f"{post_event_id}.blob",
+                    [self._capture_folder / f"{post_event_id}-post.blob"],
+                )
+                self._post_blob = None
 
     def rotate(self, event_id: str, immediate: bool = False) -> CompositeBlobCapture:
-        old = self._blob.rotate(event_id)
+        # Force-complete any active post blob before starting a new rotation
+        if self._post_blob is not None:
+            post_b, post_event_id, _ = self._post_blob
+            post_b.close()
+            self._completion_handler(
+                post_event_id,
+                self._capture_folder / f"{post_event_id}.blob",
+                [self._capture_folder / f"{post_event_id}-post.blob"],
+            )
+            self._post_blob = None
+
+        self._blob.rotate(event_id)
+
         if immediate:
-            old.close()
-            self._completion_handler(event_id, old)
+            self._completion_handler(event_id, self._capture_folder / f"{event_id}.blob", [])
         else:
-            self._active.append((old, event_id, self._follow_up_count))
+            post_path = self._capture_folder / f"{event_id}-post.blob"
+            post_blob = BlobFsCapture(post_path, self._num_slots, self._max_image_bytes, self._png_compression)
+            self._post_blob = (post_blob, event_id, self._follow_up_count)
+
         return self
 
     def close(self) -> None:
-        for blob, _event_id, _remaining in self._active:
-            blob.close()
-        self._active = []
+        if self._post_blob is not None:
+            self._post_blob[0].close()
+            self._post_blob = None
         self._blob.close()
 
     def active_blob_path(self) -> Optional[pathlib.Path]:
@@ -303,71 +348,104 @@ class CompositeBlobCapture(ImageCaptureInterface):
         self._blob.update_last_flags(flags)
 
 
+@dataclasses.dataclass
+class _OpenBlob:
+    file: Optional[Any]
+    mm: Optional[mmap.mmap]
+    version: int
+    num_slots: int
+    write_head: int
+    max_image_bytes: int
+    index_entry_size: int
+
+
 class BlobExtractor:
     def __init__(self, blob_path: pathlib.Path) -> None:
         self._blob_path = blob_path
-        self._file: Optional[Any] = None
-        self._mm: Optional[mmap.mmap] = None
+        self._blobs: list[_OpenBlob] = []
         self._tempdir: Optional[tempfile.TemporaryDirectory] = None  # type: ignore[type-arg]
-        actual_path = self._resolve_blob_path(blob_path)
-        file = open(actual_path, "rb")
-        self._file = file
+        self._frame_flags: Optional[dict[str, int]] = None
         try:
-            file_size = os.path.getsize(actual_path)
+            paths = self._resolve_blob_paths(blob_path)
+            for path in paths:
+                self._open_single_blob(path)
+        except Exception:
+            self.close()
+            raise
+
+        # Backwards-compat public attributes pointing to the first blob
+        first = self._blobs[0]
+        self._file = first.file
+        self._mm = first.mm
+        self.version = first.version
+        self.num_slots = first.num_slots
+        self.write_head = first.write_head
+        self.max_image_bytes = first.max_image_bytes
+        self.index_entry_size = first.index_entry_size
+
+    def _open_single_blob(self, path: pathlib.Path) -> None:
+        file = open(path, "rb")
+        try:
+            file_size = os.path.getsize(path)
             if file_size < SUPERBLOCK_SIZE:
                 raise ValueError("File too small to contain a valid superblock")
-            self._mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+            mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
             magic, version, num_slots, write_head, max_image_bytes, index_entry_size = struct.unpack_from(
-                SUPERBLOCK_FORMAT, self._mm, 0
+                SUPERBLOCK_FORMAT, mm, 0
             )
             if magic != MAGIC:
                 raise ValueError(f"Invalid blob magic: 0x{magic:08X}, expected 0x{MAGIC:08X}")
         except Exception:
-            if self._mm is not None:
-                self._mm.close()
             file.close()
-            self._file = None
-            if self._tempdir is not None:
-                self._tempdir.cleanup()
-                self._tempdir = None
             raise
-        self.version = version
-        self.num_slots = num_slots
-        self.write_head = write_head
-        self.max_image_bytes = max_image_bytes
-        self.index_entry_size = index_entry_size
-        self._frame_flags: Optional[dict[str, int]] = None
+        self._blobs.append(_OpenBlob(file, mm, version, num_slots, write_head, max_image_bytes, index_entry_size))
 
-    def _resolve_blob_path(self, blob_path: pathlib.Path) -> pathlib.Path:
-        if not tarfile.is_tarfile(blob_path):
-            return blob_path
+    def _resolve_blob_paths(self, blob_path: pathlib.Path) -> list[pathlib.Path]:
+        if tarfile.is_tarfile(blob_path):
+            return self._extract_tar_blobs(blob_path)
+        # Regular file: include the primary plus any {stem}-*.blob siblings
+        parent = blob_path.parent
+        stem = blob_path.stem
+        siblings = sorted(parent.glob(f"{stem}-*.blob"))
+        return [blob_path] + siblings
+
+    def _extract_tar_blobs(self, blob_path: pathlib.Path) -> list[pathlib.Path]:
         tmpdir = tempfile.TemporaryDirectory()
         self._tempdir = tmpdir
         try:
+            paths: list[pathlib.Path] = []
             with tarfile.open(blob_path) as tf:
                 members = [m for m in tf.getmembers() if m.isfile()]
                 blob_members = [m for m in members if m.name.endswith(".blob")]
-                member = blob_members[0] if blob_members else (members[0] if members else None)
-                if member is None:
+                targets = blob_members if blob_members else (members[:1] if members else [])
+                if not targets:
                     raise ValueError(f"No regular file found in archive: {blob_path}")
-                extracted = tf.extractfile(member)
-                if extracted is None:
-                    raise ValueError(f"Cannot extract member from archive: {member.name}")
-                actual_path = pathlib.Path(tmpdir.name) / pathlib.Path(member.name).name
-                actual_path.write_bytes(extracted.read())
-                return actual_path
+                for member in targets:
+                    extracted = tf.extractfile(member)
+                    if extracted is None:
+                        continue
+                    actual_path = pathlib.Path(tmpdir.name) / pathlib.Path(member.name).name
+                    actual_path.write_bytes(extracted.read())
+                    paths.append(actual_path)
+            if not paths:
+                raise ValueError(f"No regular file found in archive: {blob_path}")
+            return paths
         except Exception:
             tmpdir.cleanup()
             self._tempdir = None
             raise
 
     def close(self) -> None:
-        if self._mm is not None:
-            self._mm.close()
-            self._mm = None
-        if self._file is not None:
-            self._file.close()
-            self._file = None
+        for b in self._blobs:
+            if b.mm is not None:
+                b.mm.close()
+                b.mm = None
+            if b.file is not None:
+                b.file.close()
+                b.file = None
+        self._blobs = []
+        self._mm = None
+        self._file = None
         if self._tempdir is not None:
             self._tempdir.cleanup()
             self._tempdir = None
@@ -378,24 +456,22 @@ class BlobExtractor:
     def __exit__(self, *_: Any) -> None:
         self.close()
 
-    def extract(self, dest_dir: pathlib.Path) -> list[pathlib.Path]:
-        assert self._mm is not None
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
+    def _extract_blob(self, blob: _OpenBlob, dest_dir: pathlib.Path) -> list[pathlib.Path]:
+        assert blob.mm is not None
         extracted: list[pathlib.Path] = []
-        for i in range(self.num_slots):
-            idx_offset = SUPERBLOCK_SIZE + i * self.index_entry_size
-            if idx_offset + self.index_entry_size > len(self._mm):
+        for i in range(blob.num_slots):
+            idx_offset = SUPERBLOCK_SIZE + i * blob.index_entry_size
+            if idx_offset + blob.index_entry_size > len(blob.mm):
                 break
 
             image_offset, image_size, _flags, filename_len, _reserved, filename_raw = struct.unpack_from(
-                INDEX_ENTRY_FORMAT, self._mm, idx_offset
+                INDEX_ENTRY_FORMAT, blob.mm, idx_offset
             )
 
-            if image_size == 0 or image_offset + image_size > len(self._mm):
+            if image_size == 0 or image_offset + image_size > len(blob.mm):
                 continue
 
-            png_bytes = bytes(self._mm[image_offset : image_offset + image_size])
+            png_bytes = bytes(blob.mm[image_offset : image_offset + image_size])
             arr = np.frombuffer(png_bytes, dtype=np.uint8)
             if cv2.imdecode(arr, cv2.IMREAD_COLOR) is None:
                 continue
@@ -415,28 +491,35 @@ class BlobExtractor:
 
         return extracted
 
-    def _ensure_frame_flags(self) -> dict[str, int]:
-        if self._frame_flags is None:
-            assert self._mm is not None
-            frame_flags: dict[str, int] = {}
-            for i in range(self.num_slots):
-                idx_offset = SUPERBLOCK_SIZE + i * self.index_entry_size
-                if idx_offset + self.index_entry_size > len(self._mm):
-                    break
-                _, img_size, flags, fn_len, _, fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, self._mm, idx_offset)
-                if img_size > 0:
-                    raw_fn = fn_raw[:fn_len]
-                    try:
-                        fn = raw_fn.decode("utf-8")
-                    except UnicodeDecodeError:
-                        fn = raw_fn.decode("latin-1")
-                    frame_flags[fn] = flags
-            self._frame_flags = frame_flags
-            return frame_flags
-        return self._frame_flags
+    def extract(self, dest_dir: pathlib.Path) -> list[pathlib.Path]:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        extracted: list[pathlib.Path] = []
+        for blob in self._blobs:
+            extracted.extend(self._extract_blob(blob, dest_dir))
+        return extracted
+
+    def _flags_for_blob(self, blob: _OpenBlob, mask: int) -> set[str]:
+        assert blob.mm is not None
+        result: set[str] = set()
+        for i in range(blob.num_slots):
+            idx_offset = SUPERBLOCK_SIZE + i * blob.index_entry_size
+            if idx_offset + blob.index_entry_size > len(blob.mm):
+                break
+            _, img_size, flags, fn_len, _, fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, blob.mm, idx_offset)
+            if img_size > 0 and flags & mask:
+                raw_fn = fn_raw[:fn_len]
+                try:
+                    fn = raw_fn.decode("utf-8")
+                except UnicodeDecodeError:
+                    fn = raw_fn.decode("latin-1")
+                result.add(fn)
+        return result
 
     def get_filenames_with_flags(self, mask: int) -> set[str]:
-        return {fn for fn, flags in self._ensure_frame_flags().items() if flags & mask}
+        result: set[str] = set()
+        for blob in self._blobs:
+            result |= self._flags_for_blob(blob, mask)
+        return result
 
 
 def main() -> None:
@@ -524,13 +607,15 @@ def print_blob_info(
 
 def make_capture_backend(
     args: argparse.Namespace,
-    capture_folder: pathlib.Path,
     follow_up_count: int,
     completion_handler: Optional[BlobCompletionHandler] = None,
 ) -> ImageCaptureInterface:
-    blob_path = capture_folder / args.blob_capture_file
+    blob_path: pathlib.Path = args.blob_capture_file
+    capture_folder: pathlib.Path = args.blob_capture_folder
     num_slots: int = args.blob_num_slots
     max_image_bytes: int = args.blob_max_image_bytes
     png_compression: int = args.blob_png_compression
     handler = completion_handler if completion_handler is not None else NoOpBlobCompletionHandler()
-    return CompositeBlobCapture(blob_path, num_slots, max_image_bytes, follow_up_count, handler, png_compression)
+    return CompositeBlobCapture(
+        blob_path, capture_folder, num_slots, max_image_bytes, follow_up_count, handler, png_compression
+    )

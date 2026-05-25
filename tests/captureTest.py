@@ -58,7 +58,6 @@ class BlobFsCaptureTest:
         path = tmp_path / "cap.blob"
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.close()
-        # Corrupt magic — new behaviour deletes the file and starts fresh
         raw = bytearray(path.read_bytes())
         struct.pack_into("<I", raw, 0, 0xDEADBEEF)
         path.write_bytes(bytes(raw))
@@ -77,12 +76,10 @@ class BlobFsCaptureTest:
             blob.capture(img, fn)
         blob.close()
 
-        # write_head should have wrapped: after 4 writes into 3 slots, write_head == 1
         data = (tmp_path / "cap.blob").read_bytes()
         _, _, _, write_head, _, _ = struct.unpack_from(SUPERBLOCK_FORMAT, data, 0)
         assert write_head == 1
 
-        # Slot 0 should contain the 4th image (index 3)
         idx0_offset = SUPERBLOCK_SIZE
         img_offset, img_size, _flags, fn_len, _res, fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, idx0_offset)
         fn = fn_raw[:fn_len].decode("utf-8")
@@ -129,7 +126,6 @@ class BlobFsCaptureTest:
         blob.close()
         with open(path, "ab") as f:
             f.write(b"\x00")
-        # New behaviour: size mismatch is resolved by deleting and recreating
         reopened = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         reopened.close()
         expected = SUPERBLOCK_SIZE + 4 * INDEX_ENTRY_SIZE + 4 * 256 * 1024
@@ -156,7 +152,6 @@ class BlobFsCaptureTest:
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         blob.capture(_make_image(), "frame.png")
         blob.close()
-        # New behaviour: existing file is deleted; fresh blob always starts at write_head == 0
         reopened = BlobFsCapture(path, num_slots=4, max_image_bytes=256 * 1024)
         assert reopened._write_head == 0
         reopened.close()
@@ -173,10 +168,8 @@ class BlobFsCaptureTest:
         blob.update_last_flags(TRIGGER_FRAME_FLAG)
         blob.close()
         data = (tmp_path / "cap.blob").read_bytes()
-        # slot 0 (first) must stay 0
         _a, _b, flags0, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags0 == 0
-        # slot 1 (second/last) must have TRIGGER_FRAME_FLAG
         _a, _b, flags1, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE + INDEX_ENTRY_SIZE)
         assert flags1 == TRIGGER_FRAME_FLAG
 
@@ -242,7 +235,6 @@ class BlobExtractorTest:
             blob.capture(_make_image(), name)
         blob.close()
 
-        # Keep the superblock, full index, and both first slots' data — cut 50 bytes into slot 2
         data_section_start = SUPERBLOCK_SIZE + num_slots * INDEX_ENTRY_SIZE
         path.write_bytes(path.read_bytes()[: data_section_start + 2 * max_bytes + 50])
 
@@ -268,7 +260,6 @@ class BlobExtractorTest:
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "frame.png")
         blob.close()
-        # Cut in the middle of the second index entry so the loop must break
         truncate_at = SUPERBLOCK_SIZE + INDEX_ENTRY_SIZE + INDEX_ENTRY_SIZE // 2
         path.write_bytes(path.read_bytes()[:truncate_at])
         with BlobExtractor(path) as e:
@@ -283,7 +274,6 @@ class BlobExtractorTest:
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "real.png")
         blob.close()
-        # fn_len is at byte 24 within the slot-0 index entry
         raw = bytearray(path.read_bytes())
         struct.pack_into("<I", raw, SUPERBLOCK_SIZE + 24, 0)
         path.write_bytes(bytes(raw))
@@ -297,10 +287,9 @@ class BlobExtractorTest:
         blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "placeholder.png")
         blob.close()
-        # Patch slot-0 index: set a latin-1 filename (0xE9 = é, not valid UTF-8)
         latin1_name = b"caf\xe9.png"
         raw = bytearray(path.read_bytes())
-        struct.pack_into("<I", raw, SUPERBLOCK_SIZE + 24, len(latin1_name))  # fn_len
+        struct.pack_into("<I", raw, SUPERBLOCK_SIZE + 24, len(latin1_name))
         raw[SUPERBLOCK_SIZE + 32 : SUPERBLOCK_SIZE + 32 + len(latin1_name)] = latin1_name
         path.write_bytes(bytes(raw))
         with BlobExtractor(path) as e:
@@ -319,11 +308,8 @@ class BlobExtractorTest:
 
         raw = bytearray(path.read_bytes())
 
-        # Scenario A: slot 3 — advance write_head in superblock but leave index entry zeroed
-        struct.pack_into("<I", raw, 12, 4)  # write_head = 4 (as if 4 writes happened)
-        # Index entry for slot 3 stays all-zeros (image_size == 0)
+        struct.pack_into("<I", raw, 12, 4)
 
-        # Scenario B: slot 4 — write garbage bytes as image data, set a non-zero image_size
         sb_fields = struct.unpack_from(SUPERBLOCK_FORMAT, raw, 0)
         num_slots = sb_fields[2]
         max_image_bytes = sb_fields[4]
@@ -341,6 +327,32 @@ class BlobExtractorTest:
         extracted = BlobExtractor(path).extract(dest)
         assert len(extracted) == 3
         assert {p.name for p in extracted} == {"valid_0.png", "valid_1.png", "valid_2.png"}
+
+    def test_sibling_blobs_combined_on_extract(self, tmp_path: pathlib.Path) -> None:
+        """A primary blob and a -post sibling are both extracted and combined transparently."""
+        primary = tmp_path / "event-abc.blob"
+        post = tmp_path / "event-abc-post.blob"
+
+        b1 = BlobFsCapture(primary, num_slots=4, max_image_bytes=512 * 1024)
+        b1.capture(_make_image(), "pre.png")
+        b1.close()
+
+        b2 = BlobFsCapture(post, num_slots=4, max_image_bytes=512 * 1024)
+        b2.capture(_make_image(), "post.png")
+        b2.close()
+
+        extracted = BlobExtractor(primary).extract(tmp_path / "out")
+        assert {p.name for p in extracted} == {"pre.png", "post.png"}
+
+    def test_no_siblings_when_none_exist(self, tmp_path: pathlib.Path) -> None:
+        """When no sibling blobs exist, only the primary blob is extracted."""
+        path = tmp_path / "solo.blob"
+        b = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024)
+        b.capture(_make_image(), "only.png")
+        b.close()
+
+        extracted = BlobExtractor(path).extract(tmp_path / "out")
+        assert {p.name for p in extracted} == {"only.png"}
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +391,8 @@ class BlobExtractorTarTest:
         assert len(extracted) == 2
         assert {p.name for p in extracted} == set(names)
 
-    def test_tar_prefers_blob_extension_member(self, tmp_path: pathlib.Path) -> None:
-        """When archive contains multiple files, a member with .blob extension is preferred."""
+    def test_tar_prefers_blob_extension_members(self, tmp_path: pathlib.Path) -> None:
+        """Archive with a non-blob file and a blob file: only the blob is extracted."""
         blob_path = self._write_blob(tmp_path, [(_make_image(), "frame.png")])
         dummy = tmp_path / "readme.txt"
         dummy.write_text("hello")
@@ -392,6 +404,27 @@ class BlobExtractorTarTest:
         extracted = BlobExtractor(tar_path).extract(dest)
         assert len(extracted) == 1
         assert extracted[0].name == "frame.png"
+
+    def test_multiple_blobs_in_tar_combined(self, tmp_path: pathlib.Path) -> None:
+        """Tarball with two blob members: all images from both are combined."""
+        pre_blob = tmp_path / "pre.blob"
+        post_blob = tmp_path / "post.blob"
+
+        b1 = BlobFsCapture(pre_blob, num_slots=4, max_image_bytes=512 * 1024)
+        b1.capture(_make_image(), "pre.png")
+        b1.close()
+
+        b2 = BlobFsCapture(post_blob, num_slots=4, max_image_bytes=512 * 1024)
+        b2.capture(_make_image(), "post.png")
+        b2.close()
+
+        tar_path = tmp_path / "event.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            tf.add(pre_blob, arcname="event.blob")
+            tf.add(post_blob, arcname="event-post.blob")
+
+        extracted = BlobExtractor(tar_path).extract(tmp_path / "out")
+        assert {p.name for p in extracted} == {"pre.png", "post.png"}
 
     def test_tar_tempdir_cleaned_up_on_close(self, tmp_path: pathlib.Path) -> None:
         blob_path = self._write_blob(tmp_path, [(_make_image(), "f.png")])
@@ -451,56 +484,60 @@ class BlobPatternTest:
 
 
 class RotateTest:
-    def test_blob_rotate_renames_file_to_event_id(self, tmp_path: pathlib.Path) -> None:
-        original = tmp_path / "cap-XXX.blob"
-        blob = BlobFsCapture(original, num_slots=4, max_image_bytes=512 * 1024)
-        resolved = blob._blob_path  # e.g. cap-001.blob
+    def test_blob_rotate_moves_to_capture_folder(self, tmp_path: pathlib.Path) -> None:
+        cap_folder = tmp_path / "rotated"
+        blob_path = tmp_path / "active.blob"
+        blob = BlobFsCapture(blob_path, num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder)
         blob.capture(_make_image(), "frame0.png")
-        old = blob.rotate("my-event-id")
-        try:
-            # The original file was renamed to my-event-id.blob
-            assert (tmp_path / "my-event-id.blob").exists()
-            assert old._blob_path == tmp_path / "my-event-id.blob"
-            # The primary blob reopened at the original resolved path
-            assert blob._blob_path == resolved
-            assert resolved.exists()
-        finally:
-            old.close()
-            blob.close()
+        blob.rotate("my-event-id")
+        blob.close()
+        assert (cap_folder / "my-event-id.blob").exists()
+        assert blob_path.exists()  # fresh blob reopened at original path
 
-    def test_blob_rotate_old_handle_retains_data(self, tmp_path: pathlib.Path) -> None:
-        blob = BlobFsCapture(tmp_path / "cap-XXX.blob", num_slots=4, max_image_bytes=512 * 1024)
+    def test_blob_rotate_without_capture_folder_stays_local(self, tmp_path: pathlib.Path) -> None:
+        blob_path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(blob_path, num_slots=4, max_image_bytes=512 * 1024)
+        blob.capture(_make_image(), "frame0.png")
+        blob.rotate("event-local")
+        blob.close()
+        assert (tmp_path / "event-local.blob").exists()
+        assert blob_path.exists()
+
+    def test_blob_rotate_data_is_in_capture_folder(self, tmp_path: pathlib.Path) -> None:
+        cap_folder = tmp_path / "rotated"
+        blob = BlobFsCapture(
+            tmp_path / "active.blob", num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder
+        )
         blob.capture(_make_image(), "before_rotate.png")
-        old = blob.rotate("event-abc")
-        try:
-            blob.capture(_make_image(), "after_rotate.png")
-            blob.close()
-            old.close()
-            # Old handle (renamed to event-abc.blob): contains before_rotate.png
-            dest = tmp_path / "from_old"
-            extracted_old = BlobExtractor(tmp_path / "event-abc.blob").extract(dest)
-            assert {p.name for p in extracted_old} == {"before_rotate.png"}
-            # New blob (original path): contains after_rotate.png
-            dest2 = tmp_path / "from_new"
-            extracted_new = BlobExtractor(tmp_path / "cap-XXX.blob").extract(dest2)
-            assert {p.name for p in extracted_new} == {"after_rotate.png"}
-        finally:
-            pass  # already closed above
+        blob.rotate("event-abc")
+        blob.capture(_make_image(), "after_rotate.png")
+        blob.close()
+
+        extracted_old = BlobExtractor(cap_folder / "event-abc.blob").extract(tmp_path / "from_old")
+        assert {p.name for p in extracted_old} == {"before_rotate.png"}
+
+        extracted_new = BlobExtractor(tmp_path / "active.blob").extract(tmp_path / "from_new")
+        assert {p.name for p in extracted_new} == {"after_rotate.png"}
 
     def test_blob_rotate_multiple_times(self, tmp_path: pathlib.Path) -> None:
-        blob = BlobFsCapture(tmp_path / "cap-XX.blob", num_slots=4, max_image_bytes=512 * 1024)
+        cap_folder = tmp_path / "rotated"
+        blob = BlobFsCapture(
+            tmp_path / "active.blob", num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder
+        )
         event_ids = ["evt-a", "evt-b", "evt-c"]
-        handles = []
         for i, eid in enumerate(event_ids):
             blob.capture(_make_image(), f"frame{i}.png")
-            handles.append(blob.rotate(eid))
+            blob.rotate(eid)
         blob.close()
-        for h in handles:
-            h.close()
-        # Three event blobs renamed + the primary still exists at cap-01.blob
         for eid in event_ids:
-            assert (tmp_path / f"{eid}.blob").exists()
-        assert (tmp_path / "cap-XX.blob").exists()
+            assert (cap_folder / f"{eid}.blob").exists()
+        assert (tmp_path / "active.blob").exists()
+
+    def test_blob_rotate_returns_self(self, tmp_path: pathlib.Path) -> None:
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024)
+        result = blob.rotate("ev")
+        assert result is blob
+        blob.close()
 
 
 # ---------------------------------------------------------------------------
@@ -514,11 +551,15 @@ class CompositeBlobCaptureTest:
         tmp_path: pathlib.Path,
         follow_up: int = 2,
         handler: BlobCompletionHandler | None = None,
+        cap_folder: pathlib.Path | None = None,
     ) -> CompositeBlobCapture:
         if handler is None:
             handler = NoOpBlobCompletionHandler()
+        if cap_folder is None:
+            cap_folder = tmp_path / "rotated"
         return CompositeBlobCapture(
-            tmp_path / "cap-XXX.blob",
+            tmp_path / "active.blob",
+            cap_folder,
             num_slots=8,
             max_image_bytes=512 * 1024,
             follow_up_count=follow_up,
@@ -529,80 +570,81 @@ class CompositeBlobCaptureTest:
         comp = self._make_composite(tmp_path)
         comp.capture(_make_image(), "frame.png")
         comp.close()
-        blobs = list(tmp_path.glob("*.blob"))
-        assert len(blobs) == 1
-        extracted = BlobExtractor(blobs[0]).extract(tmp_path / "out")
+        extracted = BlobExtractor(tmp_path / "active.blob").extract(tmp_path / "out")
         assert len(extracted) == 1
 
-    def test_rotate_renames_file_to_event_id(self, tmp_path: pathlib.Path) -> None:
-        comp = self._make_composite(tmp_path)
+    def test_rotate_moves_primary_to_capture_folder(self, tmp_path: pathlib.Path) -> None:
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("fire-uuid")
         comp.close()
-        assert (tmp_path / "fire-uuid.blob").exists()
+        assert (cap_folder / "fire-uuid.blob").exists()
 
-    def test_follow_up_writes_reach_rotated_blob(self, tmp_path: pathlib.Path) -> None:
+    def test_post_blob_receives_follow_up_frames(self, tmp_path: pathlib.Path) -> None:
         follow_up = 3
-        comp = self._make_composite(tmp_path, follow_up=follow_up)
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=follow_up, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("ev1")
         for i in range(follow_up):
             comp.capture(_make_image(), f"followup{i}.png")
         comp.close()
-        # Event blob should contain: trigger frame + follow_up frames
-        extracted = BlobExtractor(tmp_path / "ev1.blob").extract(tmp_path / "out")
-        assert len(extracted) == 1 + follow_up
 
-    def test_completion_handler_called_with_event_id_and_blob(self, tmp_path: pathlib.Path) -> None:
+        # Post blob alone (ev1-post.blob has no -* sibling): only follow_up frames
+        post_extracted = BlobExtractor(cap_folder / "ev1-post.blob").extract(tmp_path / "post")
+        assert len(post_extracted) == follow_up
+
+        # BlobExtractor on the primary automatically includes the post sibling: trigger + follow-ups
+        all_extracted = BlobExtractor(cap_folder / "ev1.blob").extract(tmp_path / "all")
+        assert len(all_extracted) == 1 + follow_up
+
+    def test_completion_handler_called_with_event_id_and_paths(self, tmp_path: pathlib.Path) -> None:
         handler = MagicMock(spec=BlobCompletionHandler)
         follow_up = 2
-        comp = self._make_composite(tmp_path, follow_up=follow_up, handler=handler)
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=follow_up, handler=handler, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("ev-done")
         for _ in range(follow_up):
             comp.capture(_make_image(), "extra.png")
         comp.close()
         handler.assert_called_once()
-        call_event_id, call_blob = handler.call_args[0]
+        call_event_id, call_blob_path, call_additional = handler.call_args[0]
         assert call_event_id == "ev-done"
-        assert isinstance(call_blob, BlobFsCapture)
+        assert call_blob_path == cap_folder / "ev-done.blob"
+        assert call_additional == [cap_folder / "ev-done-post.blob"]
 
     def test_no_completion_on_regular_close(self, tmp_path: pathlib.Path) -> None:
         handler = MagicMock(spec=BlobCompletionHandler)
         comp = self._make_composite(tmp_path, follow_up=5, handler=handler)
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("ev-early")
-        # close without exhausting follow-up quota
         comp.capture(_make_image(), "one.png")
         comp.close()
         handler.assert_not_called()
 
-    def test_trigger_frame_flag_in_primary_pre_rotation(self, tmp_path: pathlib.Path) -> None:
-        comp = self._make_composite(tmp_path, follow_up=2)
+    def test_trigger_frame_flag_in_pre_rotation_blob(self, tmp_path: pathlib.Path) -> None:
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=2, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME_FLAG)
-        primary_path = comp._blob._blob_path
         comp.rotate("ev-flag")
         comp.close()
-        # The trigger frame is in the event blob (the file that was the primary before rotation)
-        data = (tmp_path / "ev-flag.blob").read_bytes()
+        data = (cap_folder / "ev-flag.blob").read_bytes()
         _img_off, _img_sz, flags, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags == TRIGGER_FRAME_FLAG
-        # New primary blob has no entries yet (fresh)
-        primary_data = primary_path.read_bytes()
-        _magic2, _ver2, _slots2, wh2, *_ = struct.unpack_from(SUPERBLOCK_FORMAT, primary_data, 0)
-        assert wh2 == 0
 
     def test_follow_up_entries_have_zero_flags(self, tmp_path: pathlib.Path) -> None:
         follow_up = 2
-        comp = self._make_composite(tmp_path, follow_up=follow_up)
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=follow_up, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png", flags=TRIGGER_FRAME_FLAG)
         comp.rotate("ev-flags")
         for i in range(follow_up):
             comp.capture(_make_image(), f"followup{i}.png")
         comp.close()
-        data = (tmp_path / "ev-flags.blob").read_bytes()
-        # Check all follow-up entries have flags == 0
-        for slot in range(1, 1 + follow_up):
+        data = (cap_folder / "ev-flags-post.blob").read_bytes()
+        for slot in range(follow_up):
             offset = SUPERBLOCK_SIZE + slot * INDEX_ENTRY_SIZE
             _img_off, _img_sz, flags, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, offset)
             assert flags == 0
@@ -622,32 +664,60 @@ class CompositeBlobCaptureTest:
         assert comp.active_blob_path() == comp._blob._blob_path
         comp.close()
 
-    def test_active_blob_path_updates_after_rotate(self, tmp_path: pathlib.Path) -> None:
+    def test_active_blob_path_unchanged_after_rotate(self, tmp_path: pathlib.Path) -> None:
         comp = self._make_composite(tmp_path)
         original_primary = comp._blob._blob_path
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("ev-rotate")
-        # After rotation the primary blob has been reopened at the original path
         assert comp.active_blob_path() == original_primary
         comp.close()
 
     def test_rotate_immediate_calls_handler_right_away(self, tmp_path: pathlib.Path) -> None:
         handler = MagicMock(spec=BlobCompletionHandler)
-        comp = self._make_composite(tmp_path, follow_up=3, handler=handler)
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=3, handler=handler, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("ev-imm", immediate=True)
-        # Handler must be called immediately — no follow-up frames needed
         handler.assert_called_once()
-        call_event_id, call_blob = handler.call_args[0]
+        call_event_id, call_blob_path, call_additional = handler.call_args[0]
         assert call_event_id == "ev-imm"
-        assert isinstance(call_blob, BlobFsCapture)
+        assert call_blob_path == cap_folder / "ev-imm.blob"
+        assert call_additional == []
         comp.close()
 
-    def test_rotate_immediate_does_not_add_to_active(self, tmp_path: pathlib.Path) -> None:
-        comp = self._make_composite(tmp_path, follow_up=3)
+    def test_rotate_immediate_no_post_blob_opened(self, tmp_path: pathlib.Path) -> None:
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=3, cap_folder=cap_folder)
         comp.capture(_make_image(), "trigger.png")
         comp.rotate("ev-imm2", immediate=True)
-        assert len(comp._active) == 0
+        assert comp._post_blob is None
+        assert not (cap_folder / "ev-imm2-post.blob").exists()
+        comp.close()
+
+    def test_rotate_immediate_does_not_deliver_follow_up_frames(self, tmp_path: pathlib.Path) -> None:
+        handler = MagicMock(spec=BlobCompletionHandler)
+        comp = self._make_composite(tmp_path, follow_up=3, handler=handler)
+        comp.capture(_make_image(), "trigger.png")
+        comp.rotate("ev-imm3", immediate=True)
+        for i in range(3):
+            comp.capture(_make_image(), f"extra{i}.png")
+        comp.close()
+        handler.assert_called_once()
+
+    def test_rotate_when_post_blob_active_completes_existing(self, tmp_path: pathlib.Path) -> None:
+        """A second rotation force-completes the existing post blob before starting a new one."""
+        handler = MagicMock(spec=BlobCompletionHandler)
+        cap_folder = tmp_path / "rotated"
+        comp = self._make_composite(tmp_path, follow_up=5, handler=handler, cap_folder=cap_folder)
+        comp.capture(_make_image(), "trigger1.png")
+        comp.rotate("ev-first")
+        # Only 1 follow-up before the second rotation
+        comp.capture(_make_image(), "followup1.png")
+        comp.rotate("ev-second")
+        # ev-first's post blob should have been force-completed
+        handler.assert_called_once()
+        call_event_id, call_blob_path, call_additional = handler.call_args[0]
+        assert call_event_id == "ev-first"
         comp.close()
 
     def test_set_capture_ts_delegates_to_primary(self, tmp_path: pathlib.Path) -> None:
@@ -660,17 +730,6 @@ class CompositeBlobCaptureTest:
         assert comp.get_last_filepath() is None
         comp.close()
 
-    def test_rotate_immediate_does_not_deliver_follow_up_frames(self, tmp_path: pathlib.Path) -> None:
-        handler = MagicMock(spec=BlobCompletionHandler)
-        comp = self._make_composite(tmp_path, follow_up=3, handler=handler)
-        comp.capture(_make_image(), "trigger.png")
-        comp.rotate("ev-imm3", immediate=True)
-        # Additional frames go only to the new primary — handler stays called exactly once
-        for i in range(3):
-            comp.capture(_make_image(), f"extra{i}.png")
-        comp.close()
-        handler.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # add_args / make_capture_backend
@@ -682,7 +741,8 @@ class CaptureFactoryTest:
         parser = argparse.ArgumentParser()
         add_args(parser)
         args = parser.parse_args([])
-        assert args.blob_capture_file == "capture.blob"
+        assert args.blob_capture_file == pathlib.Path("capture.blob")
+        assert args.blob_capture_folder == pathlib.Path(".")
         assert args.blob_num_slots == 60
         assert args.blob_max_image_bytes == 4 * 1024 * 1024
         assert args.blob_png_compression == 1
@@ -693,24 +753,37 @@ class CaptureFactoryTest:
         args = parser.parse_args(
             ["--blob-capture-file", "my.blob", "--blob-num-slots", "10", "--blob-max-image-bytes", "1024"]
         )
-        assert args.blob_capture_file == "my.blob"
+        assert args.blob_capture_file == pathlib.Path("my.blob")
         assert args.blob_num_slots == 10
         assert args.blob_max_image_bytes == 1024
 
     def test_make_capture_backend_returns_composite(self, tmp_path: pathlib.Path) -> None:
         parser = argparse.ArgumentParser()
         add_args(parser)
-        args = parser.parse_args([])
-        backend = make_capture_backend(args, tmp_path, follow_up_count=5)
+        cap_folder = tmp_path / "rotated"
+        args = parser.parse_args(
+            [
+                f"--blob-capture-file={tmp_path / 'active.blob'}",
+                f"--blob-capture-folder={cap_folder}",
+            ]
+        )
+        backend = make_capture_backend(args, follow_up_count=5)
         assert isinstance(backend, CompositeBlobCapture)
         backend.close()
 
     def test_make_capture_backend_uses_completion_handler(self, tmp_path: pathlib.Path) -> None:
         parser = argparse.ArgumentParser()
         add_args(parser)
-        args = parser.parse_args([])
+        cap_folder = tmp_path / "rotated"
+        cap_folder.mkdir()
+        args = parser.parse_args(
+            [
+                f"--blob-capture-file={tmp_path / 'active.blob'}",
+                f"--blob-capture-folder={cap_folder}",
+            ]
+        )
         handler = MagicMock(spec=BlobCompletionHandler)
-        backend = make_capture_backend(args, tmp_path, follow_up_count=1, completion_handler=handler)
+        backend = make_capture_backend(args, follow_up_count=1, completion_handler=handler)
         assert isinstance(backend, CompositeBlobCapture)
         backend.capture(_make_image(), "t.png")
         backend.rotate("ev")
