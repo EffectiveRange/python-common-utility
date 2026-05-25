@@ -505,7 +505,9 @@ class RotateTest:
 
     def test_blob_rotate_data_is_in_capture_folder(self, tmp_path: pathlib.Path) -> None:
         cap_folder = tmp_path / "rotated"
-        blob = BlobFsCapture(tmp_path / "active.blob", num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder)
+        blob = BlobFsCapture(
+            tmp_path / "active.blob", num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder
+        )
         blob.capture(_make_image(), "before_rotate.png")
         blob.rotate("event-abc")
         blob.capture(_make_image(), "after_rotate.png")
@@ -519,7 +521,9 @@ class RotateTest:
 
     def test_blob_rotate_multiple_times(self, tmp_path: pathlib.Path) -> None:
         cap_folder = tmp_path / "rotated"
-        blob = BlobFsCapture(tmp_path / "active.blob", num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder)
+        blob = BlobFsCapture(
+            tmp_path / "active.blob", num_slots=4, max_image_bytes=512 * 1024, capture_folder=cap_folder
+        )
         event_ids = ["evt-a", "evt-b", "evt-c"]
         for i, eid in enumerate(event_ids):
             blob.capture(_make_image(), f"frame{i}.png")
@@ -757,10 +761,12 @@ class CaptureFactoryTest:
         parser = argparse.ArgumentParser()
         add_args(parser)
         cap_folder = tmp_path / "rotated"
-        args = parser.parse_args([
-            f"--blob-capture-file={tmp_path / 'active.blob'}",
-            f"--blob-capture-folder={cap_folder}",
-        ])
+        args = parser.parse_args(
+            [
+                f"--blob-capture-file={tmp_path / 'active.blob'}",
+                f"--blob-capture-folder={cap_folder}",
+            ]
+        )
         backend = make_capture_backend(args, follow_up_count=5)
         assert isinstance(backend, CompositeBlobCapture)
         backend.close()
@@ -770,10 +776,12 @@ class CaptureFactoryTest:
         add_args(parser)
         cap_folder = tmp_path / "rotated"
         cap_folder.mkdir()
-        args = parser.parse_args([
-            f"--blob-capture-file={tmp_path / 'active.blob'}",
-            f"--blob-capture-folder={cap_folder}",
-        ])
+        args = parser.parse_args(
+            [
+                f"--blob-capture-file={tmp_path / 'active.blob'}",
+                f"--blob-capture-folder={cap_folder}",
+            ]
+        )
         handler = MagicMock(spec=BlobCompletionHandler)
         backend = make_capture_backend(args, follow_up_count=1, completion_handler=handler)
         assert isinstance(backend, CompositeBlobCapture)

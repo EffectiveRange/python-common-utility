@@ -616,4 +616,6 @@ def make_capture_backend(
     max_image_bytes: int = args.blob_max_image_bytes
     png_compression: int = args.blob_png_compression
     handler = completion_handler if completion_handler is not None else NoOpBlobCompletionHandler()
-    return CompositeBlobCapture(blob_path, capture_folder, num_slots, max_image_bytes, follow_up_count, handler, png_compression)
+    return CompositeBlobCapture(
+        blob_path, capture_folder, num_slots, max_image_bytes, follow_up_count, handler, png_compression
+    )
