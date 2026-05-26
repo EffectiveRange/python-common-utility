@@ -800,9 +800,10 @@ class CaptureFactoryTest:
 def _run_extract_cli(blob_path: pathlib.Path, dest: pathlib.Path, info: bool = False) -> str:
     """Run the extract CLI and return captured stdout."""
     stdout = io.StringIO()
-    argv = ["blob-extract", f"--blob-capture-file={str(blob_path)}", str(dest)]
+    argv = ["blob-extract", "-d", str(dest)]
     if info:
         argv.append("--info")
+    argv.append(str(blob_path))
     with patch("sys.argv", argv), patch("sys.stdout", stdout), patch("sys.stderr", io.StringIO()):
         blob_extract_main()
     return stdout.getvalue()
@@ -842,7 +843,7 @@ class BlobExtractCliTest:
 
     def test_missing_blob_exits_with_error(self, tmp_path: pathlib.Path) -> None:
         stderr = io.StringIO()
-        argv = ["blob-extract", f"--blob-capture-file={tmp_path / 'nonexistent.blob'}", str(tmp_path / "out")]
+        argv = ["blob-extract", "-d", str(tmp_path / "out"), str(tmp_path / "nonexistent.blob")]
         with patch("sys.argv", argv), patch("sys.stderr", stderr):
             with pytest.raises(SystemExit) as exc:
                 blob_extract_main()
@@ -853,7 +854,7 @@ class BlobExtractCliTest:
         path = tmp_path / "bad.blob"
         path.write_bytes(b"\xff" * SUPERBLOCK_SIZE)
         stderr = io.StringIO()
-        argv = ["blob-extract", f"--blob-capture-file={path}", str(tmp_path / "out")]
+        argv = ["blob-extract", "-d", str(tmp_path / "out"), str(path)]
         with patch("sys.argv", argv), patch("sys.stderr", stderr):
             with pytest.raises(SystemExit) as exc:
                 blob_extract_main()

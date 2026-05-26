@@ -530,7 +530,8 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "dest",
+        "-d",
+        "--dest",
         type=pathlib.Path,
         nargs="?",
         default=pathlib.Path("."),
@@ -541,13 +542,13 @@ def main() -> None:
         action="store_true",
         help="Print blob metadata and slot summary without extracting images",
     )
-    add_args(parser)
+    parser.add_argument("blob", type=pathlib.Path, help="Path to the blob file or tar archive to extract")
     args = parser.parse_args()
 
     try:
-        extractor = BlobExtractor(args.blob_capture_file)
+        extractor = BlobExtractor(args.blob)
     except FileNotFoundError:
-        print(f"error: blob file not found: {args.blob_capture_file}", file=sys.stderr)
+        print(f"error: blob file not found: {args.blob}", file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -593,7 +594,7 @@ def print_blob_info(
             return f"{n / 1024 / 1024:.1f} MiB ({n} bytes)"
         return f"{n / 1024:.1f} KiB ({n} bytes)"
 
-    print(f"blob:             {args.blob_capture_file}")
+    print(f"blob:             {args.blob}")
     print(f"magic:            {MAGIC:#010x}")
     print(f"version:          {version}")
     print(f"num_slots:        {num_slots}  (write_head={write_head})")
