@@ -33,34 +33,34 @@ INDEX_ENTRY_SIZE = struct.calcsize(INDEX_ENTRY_FORMAT)
 TRIGGER_FRAME_FLAG: int = 1
 
 
-def add_args(parser: argparse.ArgumentParser, **defaults: dict[str, Any]) -> None:
+def add_args(parser: argparse.ArgumentParser, **defaults: Any) -> None:
     parser.add_argument(
         "--blob-capture-file",
-        default=defaults.get("blob_capture_file", "capture.blob"),
+        default=pathlib.Path(defaults.get("blob_capture_file", "capture.blob")),
         help="Full path to the active blob ring-buffer file (e.g. a tmpfs location)",
         type=pathlib.Path,
     )
     parser.add_argument(
         "--blob-capture-folder",
-        default=defaults.get("blob_capture_folder", "."),
+        default=pathlib.Path(defaults.get("blob_capture_folder", ".")),
         help="Folder for the rotated blob capture files (created if absent)",
         type=pathlib.Path,
     )
     parser.add_argument(
         "--blob-num-slots",
-        default=defaults.get("blob_num_slots", 60),
+        default=int(defaults.get("blob_num_slots", 60)),
         type=int,
         help="Number of image slots in the blob ring buffer",
     )
     parser.add_argument(
         "--blob-max-image-bytes",
-        default=defaults.get("blob_max_image_bytes", 4 * 1024 * 1024),
+        default=int(defaults.get("blob_max_image_bytes", 4 * 1024 * 1024)),
         type=int,
         help="Maximum bytes per image slot in the blob ring buffer",
     )
     parser.add_argument(
         "--blob-png-compression",
-        default=defaults.get("blob_png_compression", 1),
+        default=int(defaults.get("blob_png_compression", 1)),
         type=int,
         choices=range(10),
         metavar="0-9",
