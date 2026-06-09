@@ -5,7 +5,7 @@
 | Name                                 |    Stmts |     Miss |   Branch |   BrPart |   Cover |   Missing |
 |------------------------------------- | -------: | -------: | -------: | -------: | ------: | --------: |
 | common\_utility/\_\_init\_\_.py      |        8 |        0 |        0 |        0 |    100% |           |
-| common\_utility/capture.py           |      368 |        5 |       76 |        5 |     98% |184, 426, 431, 440-\>443, 443-\>439, 513-514 |
+| common\_utility/capture.py           |      411 |        8 |       92 |        8 |     97% |203, 460, 465, 474-\>477, 477-\>473, 501, 505, 509, 578-579 |
 | common\_utility/configLoader.py      |       89 |        0 |       40 |        0 |    100% |           |
 | common\_utility/fileDownloader.py    |       67 |        0 |       20 |        0 |    100% |           |
 | common\_utility/fileUtility.py       |       53 |        1 |       14 |        1 |     97% |        44 |
@@ -14,7 +14,7 @@
 | common\_utility/rateLimiter.py       |       27 |        0 |        2 |        0 |    100% |           |
 | common\_utility/reusableTimer.py     |       37 |        0 |        6 |        2 |     95% |58-\>exit, 72-\>exit |
 | common\_utility/sessionProvider.py   |        6 |        1 |        0 |        0 |     83% |        17 |
-| **TOTAL**                            |  **708** |    **8** |  **168** |    **9** | **98%** |           |
+| **TOTAL**                            |  **751** |   **11** |  **184** |   **12** | **98%** |           |
 
 
 ## Setup coverage badge
