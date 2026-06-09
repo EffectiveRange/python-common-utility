@@ -9,6 +9,8 @@ import pytest
 
 from unittest.mock import MagicMock, patch
 
+import cv2
+
 from common_utility.capture import (
     MAGIC,
     SUPERBLOCK_FORMAT,
@@ -16,6 +18,9 @@ from common_utility.capture import (
     INDEX_ENTRY_FORMAT,
     INDEX_ENTRY_SIZE,
     TRIGGER_FRAME_FLAG,
+    RAW_IMAGE_FLAG,
+    RAW_IMAGE_HEADER_FORMAT,
+    RAW_IMAGE_HEADER_SIZE,
     BlobCompletionHandler,
     NoOpBlobCompletionHandler,
     CompositeBlobCapture,
@@ -111,7 +116,7 @@ class BlobFsCaptureTest:
         _img_off, _img_sz, flags, _fn_len, _res, _fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags == 0xCAFEBABE
 
-    def test_update_last_flags_overwrites_flags_field(self, tmp_path: pathlib.Path) -> None:
+    def test_update_last_flags_sets_flags_field(self, tmp_path: pathlib.Path) -> None:
         blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024)
         blob.capture(_make_image(), "frame.png", flags=0)
         blob.update_last_flags(TRIGGER_FRAME_FLAG)
@@ -119,6 +124,35 @@ class BlobFsCaptureTest:
         data = (tmp_path / "cap.blob").read_bytes()
         _img_off, _img_sz, flags, _fn_len, _res, _fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
         assert flags == TRIGGER_FRAME_FLAG
+
+    def test_raw_capture_sets_raw_image_flag(self, tmp_path: pathlib.Path) -> None:
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024, raw_capture=True)
+        blob.capture(_make_image(), "frame.png")
+        blob.close()
+        data = (tmp_path / "cap.blob").read_bytes()
+        _img_off, _img_sz, flags, _fn_len, _res, _fn_raw = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
+        assert flags & RAW_IMAGE_FLAG
+
+    def test_raw_capture_stores_header_and_pixels(self, tmp_path: pathlib.Path) -> None:
+        image = _make_image()
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024, raw_capture=True)
+        blob.capture(image, "frame.png")
+        blob.close()
+        data = (tmp_path / "cap.blob").read_bytes()
+        img_off, img_sz, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
+        raw = data[img_off : img_off + img_sz]
+        assert len(raw) == RAW_IMAGE_HEADER_SIZE + image.size
+        h, w, c = struct.unpack_from(RAW_IMAGE_HEADER_FORMAT, raw, 0)
+        assert (h, w, c) == (image.shape[0], image.shape[1], image.shape[2])
+
+    def test_update_last_flags_preserves_raw_image_flag(self, tmp_path: pathlib.Path) -> None:
+        blob = BlobFsCapture(tmp_path / "cap.blob", num_slots=4, max_image_bytes=512 * 1024, raw_capture=True)
+        blob.capture(_make_image(), "frame.png")
+        blob.update_last_flags(TRIGGER_FRAME_FLAG)
+        blob.close()
+        data = (tmp_path / "cap.blob").read_bytes()
+        _img_off, _img_sz, flags, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
+        assert flags == (RAW_IMAGE_FLAG | TRIGGER_FRAME_FLAG)
 
     def test_open_on_size_mismatch_creates_fresh_blob(self, tmp_path: pathlib.Path) -> None:
         path = tmp_path / "cap.blob"
@@ -353,6 +387,50 @@ class BlobExtractorTest:
 
         extracted = BlobExtractor(path).extract(tmp_path / "out")
         assert {p.name for p in extracted} == {"only.png"}
+
+    def test_raw_capture_extractor_produces_png(self, tmp_path: pathlib.Path) -> None:
+        names = ["a.png", "b.png"]
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024, raw_capture=True)
+        for name in names:
+            blob.capture(_make_image(), name)
+        blob.close()
+        dest = tmp_path / "out"
+        extracted = BlobExtractor(path).extract(dest)
+        assert len(extracted) == 2
+        assert {p.name for p in extracted} == set(names)
+        for p in extracted:
+            arr = cv2.imdecode(np.frombuffer(p.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+            assert arr is not None
+
+    def test_raw_capture_round_trip_pixel_equality(self, tmp_path: pathlib.Path) -> None:
+        image = _make_image()
+        path = tmp_path / "cap.blob"
+        blob = BlobFsCapture(path, num_slots=4, max_image_bytes=512 * 1024, raw_capture=True)
+        blob.capture(image, "frame.png")
+        blob.close()
+        extracted = BlobExtractor(path).extract(tmp_path / "out")
+        assert len(extracted) == 1
+        decoded = cv2.imdecode(np.frombuffer(extracted[0].read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+        assert decoded is not None
+        # cv2 stores BGR; compare channel-by-channel (lossless PNG round-trip must be identical)
+        assert np.array_equal(image, decoded)
+
+    def test_raw_and_png_blobs_extracted_transparently(self, tmp_path: pathlib.Path) -> None:
+        """Primary blob uses PNG, post sibling uses raw; both extract to valid PNGs."""
+        primary = tmp_path / "event.blob"
+        post = tmp_path / "event-post.blob"
+        b1 = BlobFsCapture(primary, num_slots=4, max_image_bytes=512 * 1024, raw_capture=False)
+        b1.capture(_make_image(), "png.png")
+        b1.close()
+        b2 = BlobFsCapture(post, num_slots=4, max_image_bytes=512 * 1024, raw_capture=True)
+        b2.capture(_make_image(), "raw.png")
+        b2.close()
+        extracted = BlobExtractor(primary).extract(tmp_path / "out")
+        assert {p.name for p in extracted} == {"png.png", "raw.png"}
+        for p in extracted:
+            arr = cv2.imdecode(np.frombuffer(p.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+            assert arr is not None
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +808,35 @@ class CompositeBlobCaptureTest:
         assert comp.get_last_filepath() is None
         comp.close()
 
+    def test_composite_raw_capture_post_blob_also_raw(self, tmp_path: pathlib.Path) -> None:
+        follow_up = 2
+        cap_folder = tmp_path / "rotated"
+        comp = CompositeBlobCapture(
+            tmp_path / "active.blob",
+            cap_folder,
+            num_slots=8,
+            max_image_bytes=512 * 1024,
+            follow_up_count=follow_up,
+            completion_handler=NoOpBlobCompletionHandler(),
+            raw_capture=True,
+        )
+        comp.capture(_make_image(), "trigger.png")
+        comp.rotate("ev-raw")
+        for i in range(follow_up):
+            comp.capture(_make_image(), f"followup{i}.png")
+        comp.close()
+
+        for blob_path in [cap_folder / "ev-raw.blob", cap_folder / "ev-raw-post.blob"]:
+            data = blob_path.read_bytes()
+            _, _, flags, *_ = struct.unpack_from(INDEX_ENTRY_FORMAT, data, SUPERBLOCK_SIZE)
+            assert flags & RAW_IMAGE_FLAG
+
+        all_extracted = BlobExtractor(cap_folder / "ev-raw.blob").extract(tmp_path / "out")
+        assert len(all_extracted) == 1 + follow_up
+        for p in all_extracted:
+            arr = cv2.imdecode(np.frombuffer(p.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+            assert arr is not None
+
 
 # ---------------------------------------------------------------------------
 # add_args / make_capture_backend
@@ -746,6 +853,19 @@ class CaptureFactoryTest:
         assert args.blob_num_slots == 60
         assert args.blob_max_image_bytes == 4 * 1024 * 1024
         assert args.blob_png_compression == 1
+        assert args.blob_raw_capture is False
+
+    def test_add_args_raw_capture_flag(self) -> None:
+        parser = argparse.ArgumentParser()
+        add_args(parser)
+        args = parser.parse_args(["--blob-raw-capture"])
+        assert args.blob_raw_capture is True
+
+    def test_add_args_raw_capture_default_injectable(self) -> None:
+        parser = argparse.ArgumentParser()
+        add_args(parser, blob_raw_capture=True)
+        args = parser.parse_args([])
+        assert args.blob_raw_capture is True
 
     def test_add_args_allows_overrides(self) -> None:
         parser = argparse.ArgumentParser()

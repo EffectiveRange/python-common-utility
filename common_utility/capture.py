@@ -31,6 +31,10 @@ INDEX_ENTRY_FORMAT = "<QQQII1024s"
 INDEX_ENTRY_SIZE = struct.calcsize(INDEX_ENTRY_FORMAT)
 
 TRIGGER_FRAME_FLAG: int = 1
+RAW_IMAGE_FLAG: int = 2
+
+RAW_IMAGE_HEADER_FORMAT = "<III"  # height, width, channels
+RAW_IMAGE_HEADER_SIZE = struct.calcsize(RAW_IMAGE_HEADER_FORMAT)
 
 
 def add_args(parser: argparse.ArgumentParser, **defaults: Any) -> None:
@@ -65,6 +69,12 @@ def add_args(parser: argparse.ArgumentParser, **defaults: Any) -> None:
         choices=range(10),
         metavar="0-9",
         help="PNG compression level for captured images (0=none, 9=max); default 1 favours throughput",
+    )
+    parser.add_argument(
+        "--blob-raw-capture",
+        action="store_true",
+        default=bool(defaults.get("blob_raw_capture", False)),
+        help="Store images as raw pixel arrays instead of PNG (faster capture, decoded to PNG on extraction)",
     )
 
 
@@ -122,12 +132,14 @@ class BlobFsCapture(ImageCaptureInterface):
         max_image_bytes: int = 4 * 1024 * 1024,
         png_compression: int = 1,
         capture_folder: Optional[pathlib.Path] = None,
+        raw_capture: bool = False,
     ) -> None:
         self._blob_path = blob_path
         self._num_slots = num_slots
         self._max_image_bytes = max_image_bytes
         self._png_compression = png_compression
         self._capture_folder = capture_folder
+        self._raw_capture = raw_capture
         self._index_base = SUPERBLOCK_SIZE
         self._data_base = SUPERBLOCK_SIZE + num_slots * INDEX_ENTRY_SIZE
         self._file_size = self._data_base + num_slots * max_image_bytes
@@ -179,26 +191,38 @@ class BlobFsCapture(ImageCaptureInterface):
         if len(filename_bytes) > MAX_FILENAME_BYTES:
             raise ValueError(f"Filename too long: {len(filename_bytes)} bytes, max {MAX_FILENAME_BYTES}")
 
-        ok, buf = cv2.imencode(".png", image, [cv2.IMWRITE_PNG_COMPRESSION, self._png_compression])
-        if not ok:
-            raise ValueError("cv2.imencode failed to encode image as PNG")
-        png_bytes = buf.tobytes()
+        if self._raw_capture:
+            h, w = image.shape[:2]
+            c = image.shape[2] if image.ndim == 3 else 1
+            header = struct.pack(RAW_IMAGE_HEADER_FORMAT, h, w, c)
+            image_size = RAW_IMAGE_HEADER_SIZE + image.nbytes
+            actual_flags = flags | RAW_IMAGE_FLAG
+        else:
+            ok, buf = cv2.imencode(".png", image, [cv2.IMWRITE_PNG_COMPRESSION, self._png_compression])
+            if not ok:
+                raise ValueError("cv2.imencode failed to encode image as PNG")
+            image_size = len(buf)
+            actual_flags = flags
 
-        if len(png_bytes) > self._max_image_bytes:
-            raise ValueError(f"PNG too large: {len(png_bytes)} bytes, max {self._max_image_bytes}")
+        if image_size > self._max_image_bytes:
+            raise ValueError(f"Image data too large: {image_size} bytes, max {self._max_image_bytes}")
 
         slot = self._write_head
         data_offset = self._slot_data_offset(slot)
         idx_offset = self._slot_index_offset(slot)
 
-        self._mm[data_offset : data_offset + len(png_bytes)] = png_bytes
+        if self._raw_capture:
+            self._mm[data_offset : data_offset + RAW_IMAGE_HEADER_SIZE] = header
+            self._mm[data_offset + RAW_IMAGE_HEADER_SIZE : data_offset + image_size] = image
+        else:
+            self._mm[data_offset : data_offset + image_size] = buf
 
         filename_padded = filename_bytes.ljust(MAX_FILENAME_BYTES, b"\x00")
         entry = struct.pack(
             INDEX_ENTRY_FORMAT,
             data_offset,
-            len(png_bytes),
-            flags,
+            image_size,
+            actual_flags,
             len(filename_bytes),
             0,
             filename_padded,
@@ -223,7 +247,8 @@ class BlobFsCapture(ImageCaptureInterface):
         assert self._mm is not None
         last_slot = (self._write_head - 1) % self._num_slots
         idx_offset = self._slot_index_offset(last_slot)
-        struct.pack_into("<Q", self._mm, idx_offset + 16, flags)
+        current = struct.unpack_from("<Q", self._mm, idx_offset + 16)[0]
+        struct.pack_into("<Q", self._mm, idx_offset + 16, current | flags)
         self._mm.flush()
 
     def rotate(self, event_id: str, immediate: bool = False) -> BlobFsCapture:
@@ -277,13 +302,20 @@ class CompositeBlobCapture(ImageCaptureInterface):
         follow_up_count: int,
         completion_handler: BlobCompletionHandler,
         png_compression: int = 1,
+        raw_capture: bool = False,
     ) -> None:
         self._capture_folder = capture_folder
         self._num_slots = num_slots
         self._max_image_bytes = max_image_bytes
         self._png_compression = png_compression
+        self._raw_capture = raw_capture
         self._blob = BlobFsCapture(
-            blob_path, num_slots, max_image_bytes, png_compression, capture_folder=capture_folder
+            blob_path,
+            num_slots,
+            max_image_bytes,
+            png_compression,
+            capture_folder=capture_folder,
+            raw_capture=raw_capture,
         )
         self._follow_up_count = follow_up_count
         self._completion_handler = completion_handler
@@ -330,7 +362,9 @@ class CompositeBlobCapture(ImageCaptureInterface):
             self._completion_handler(event_id, self._capture_folder / f"{event_id}.blob", [])
         else:
             post_path = self._capture_folder / f"{event_id}-post.blob"
-            post_blob = BlobFsCapture(post_path, self._num_slots, self._max_image_bytes, self._png_compression)
+            post_blob = BlobFsCapture(
+                post_path, self._num_slots, self._max_image_bytes, self._png_compression, raw_capture=self._raw_capture
+            )
             self._post_blob = (post_blob, event_id, self._follow_up_count)
 
         return self
@@ -456,38 +490,69 @@ class BlobExtractor:
     def __exit__(self, *_: Any) -> None:
         self.close()
 
+    def _extract_png(self, raw_data: bytes) -> Optional[bytes]:
+        arr = np.frombuffer(raw_data, dtype=np.uint8)
+        if cv2.imdecode(arr, cv2.IMREAD_COLOR) is None:
+            return None
+        return raw_data
+
+    def _extract_raw(self, raw_data: bytes) -> Optional[bytes]:
+        if len(raw_data) < RAW_IMAGE_HEADER_SIZE:
+            return None
+        h, w, c = struct.unpack_from(RAW_IMAGE_HEADER_FORMAT, raw_data, 0)
+        pixel_data = raw_data[RAW_IMAGE_HEADER_SIZE:]
+        if len(pixel_data) != h * w * c:
+            return None
+        arr = np.frombuffer(pixel_data, dtype=np.uint8).reshape(h, w, c)
+        ok, buf = cv2.imencode(".png", arr)
+        if not ok:
+            return None
+        return buf.tobytes()
+
+    def _extract_one(self, i: int, blob: _OpenBlob, dest_dir: pathlib.Path) -> Optional[pathlib.Path]:
+        idx_offset = SUPERBLOCK_SIZE + i * blob.index_entry_size
+        assert blob.mm is not None
+        if idx_offset + blob.index_entry_size > len(blob.mm):
+            return None
+
+        image_offset, image_size, _flags, filename_len, _reserved, filename_raw = struct.unpack_from(
+            INDEX_ENTRY_FORMAT, blob.mm, idx_offset
+        )
+
+        if image_size == 0 or image_offset + image_size > len(blob.mm):
+            return None
+
+        raw_data = bytes(blob.mm[image_offset : image_offset + image_size])
+
+        if _flags & RAW_IMAGE_FLAG:
+            png_bytes = self._extract_raw(raw_data)
+        else:
+            png_bytes = self._extract_png(raw_data)
+
+        if png_bytes is None:
+            return None
+
+        raw_fn = filename_raw[:filename_len]
+        try:
+            filename = raw_fn.decode("utf-8")
+        except UnicodeDecodeError:
+            filename = raw_fn.decode("latin-1")
+
+        if not filename:
+            filename = f"slot_{i:04d}.png"
+
+        dest_path = dest_dir / str(filename)
+        dest_path.write_bytes(png_bytes)
+        return dest_path
+
     def _extract_blob(self, blob: _OpenBlob, dest_dir: pathlib.Path) -> list[pathlib.Path]:
         assert blob.mm is not None
         extracted: list[pathlib.Path] = []
         for i in range(blob.num_slots):
-            idx_offset = SUPERBLOCK_SIZE + i * blob.index_entry_size
-            if idx_offset + blob.index_entry_size > len(blob.mm):
-                break
-
-            image_offset, image_size, _flags, filename_len, _reserved, filename_raw = struct.unpack_from(
-                INDEX_ENTRY_FORMAT, blob.mm, idx_offset
-            )
-
-            if image_size == 0 or image_offset + image_size > len(blob.mm):
+            dst = self._extract_one(i, blob, dest_dir)
+            if dst is None:
                 continue
-
-            png_bytes = bytes(blob.mm[image_offset : image_offset + image_size])
-            arr = np.frombuffer(png_bytes, dtype=np.uint8)
-            if cv2.imdecode(arr, cv2.IMREAD_COLOR) is None:
-                continue
-
-            raw_fn = filename_raw[:filename_len]
-            try:
-                filename = raw_fn.decode("utf-8")
-            except UnicodeDecodeError:
-                filename = raw_fn.decode("latin-1")
-
-            if not filename:
-                filename = f"slot_{i:04d}.png"
-
-            dest_path = dest_dir / filename
-            dest_path.write_bytes(png_bytes)
-            extracted.append(dest_path)
+            extracted.append(dst)
 
         return extracted
 
@@ -616,7 +681,8 @@ def make_capture_backend(
     num_slots: int = args.blob_num_slots
     max_image_bytes: int = args.blob_max_image_bytes
     png_compression: int = args.blob_png_compression
+    raw_capture: bool = args.blob_raw_capture
     handler = completion_handler if completion_handler is not None else NoOpBlobCompletionHandler()
     return CompositeBlobCapture(
-        blob_path, capture_folder, num_slots, max_image_bytes, follow_up_count, handler, png_compression
+        blob_path, capture_folder, num_slots, max_image_bytes, follow_up_count, handler, png_compression, raw_capture
     )
