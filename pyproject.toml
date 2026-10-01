@@ -12,8 +12,6 @@ dependencies = [
     "pydantic",
     "jinja2",
     "netifaces",
-    "opencv-python-headless",
-    "numpy",
     "python-context-logger @ git+https://github.com/EffectiveRange/python-context-logger.git@latest",
 ]
 dynamic = ["version"]
@@ -24,9 +22,6 @@ dev = [
     "flake8",
     "pytest-cov",
 ]
-
-[project.scripts]
-er-blob-extract = "common_utility.capture:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
