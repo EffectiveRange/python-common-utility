@@ -1,7 +1,7 @@
 {
   "deps": [
     {
-      "name": "python3-context-logger",
+      "name": "python3-context-logger (>=1.3.2)",
       "hostinstall": true
     }
   ]
